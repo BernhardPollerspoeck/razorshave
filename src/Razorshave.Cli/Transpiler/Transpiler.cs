@@ -47,6 +47,7 @@ public static class Transpiler
         }
 
         var sb = new StringBuilder();
+        HeaderEmitter.Emit(sb);
         ClassEmitter.Emit(component, model, sb);
         return sb.ToString();
     }

@@ -1,4 +1,6 @@
-﻿export class Weather extends Component {
+﻿import { h, markup, Component, LayoutComponent, EventArgs, MouseEventArgs, KeyboardEventArgs, ChangeEventArgs, FocusEventArgs, PageTitle } from '@razorshave/runtime';
+
+export class Weather extends Component {
   render() {
     return [
       h(PageTitle, { 'ChildContent': () => ["Weather"] }),

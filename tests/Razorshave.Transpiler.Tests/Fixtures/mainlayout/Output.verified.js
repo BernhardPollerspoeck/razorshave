@@ -1,4 +1,6 @@
-﻿export class MainLayout extends LayoutComponent {
+﻿import { h, markup, Component, LayoutComponent, EventArgs, MouseEventArgs, KeyboardEventArgs, ChangeEventArgs, FocusEventArgs, PageTitle } from '@razorshave/runtime';
+
+export class MainLayout extends LayoutComponent {
   render() {
     return [
       h("div", { 'class': "page", 'b-ym0hq95m43': "" }, h("div", { 'class': "sidebar", 'b-ym0hq95m43': "" }, h(NavMenu, {})), markup("\r\n\r\n    "), h("main", { 'b-ym0hq95m43': "" }, markup("<div class=\"top-row px-4\" b-ym0hq95m43><a href=\"https://learn.microsoft.com/aspnet/core/\" target=\"_blank\" b-ym0hq95m43>About</a></div>\r\n\r\n        "), h("article", { 'class': "content px-4", 'b-ym0hq95m43': "" }, this.body))),
