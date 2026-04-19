@@ -2,13 +2,12 @@ using static Razorshave.Cli.Transpiler.Transpiler;
 
 namespace Razorshave.Transpiler.Tests;
 
-public sealed class ClassSkeletonTests
+public sealed class TranspilerTests
 {
     [Fact]
-    public Task Counter_EmitsClassSkeleton()
+    public Task Counter()
     {
-        var source = FixtureHelper.ReadInput("counter");
-        var js = Transpile(source);
+        var js = Transpile(FixtureHelper.ReadInput("counter"));
 
         return Verifier.Verify(js, extension: "js")
             .UseDirectory(FixtureHelper.GetDirectory("counter"))
@@ -16,10 +15,9 @@ public sealed class ClassSkeletonTests
     }
 
     [Fact]
-    public Task Weather_EmitsClassSkeleton()
+    public Task Weather()
     {
-        var source = FixtureHelper.ReadInput("weather");
-        var js = Transpile(source);
+        var js = Transpile(FixtureHelper.ReadInput("weather"));
 
         return Verifier.Verify(js, extension: "js")
             .UseDirectory(FixtureHelper.GetDirectory("weather"))
@@ -27,10 +25,9 @@ public sealed class ClassSkeletonTests
     }
 
     [Fact]
-    public Task MainLayout_EmitsClassSkeleton()
+    public Task MainLayout()
     {
-        var source = FixtureHelper.ReadInput("mainlayout");
-        var js = Transpile(source);
+        var js = Transpile(FixtureHelper.ReadInput("mainlayout"));
 
         return Verifier.Verify(js, extension: "js")
             .UseDirectory(FixtureHelper.GetDirectory("mainlayout"))
