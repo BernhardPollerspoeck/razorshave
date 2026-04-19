@@ -1,5 +1,6 @@
 using System.Text;
 
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace Razorshave.Cli.Transpiler;
@@ -13,13 +14,14 @@ internal static class ClassEmitter
 {
     public const string Indent = "  ";
 
-    public static void Emit(ClassDeclarationSyntax component, StringBuilder sb)
+    public static void Emit(ClassDeclarationSyntax component, SemanticModel model, StringBuilder sb)
     {
         var name = component.Identifier.Text;
         var jsBase = ComponentClassifier.MapBaseToJs(component);
         var ctx = new EmitContext
         {
             ClassMembers = CollectMemberNames(component),
+            Model = model,
         };
 
         sb.Append("export class ").Append(name).Append(" extends ").Append(jsBase).Append(" {\n");
@@ -30,6 +32,10 @@ internal static class ClassEmitter
             {
                 case FieldDeclarationSyntax field:
                     FieldEmitter.Emit(field, sb);
+                    break;
+
+                case MethodDeclarationSyntax method when method.Identifier.Text == "BuildRenderTree":
+                    RenderTreeEmitter.Emit(method, sb, ctx);
                     break;
 
                 case MethodDeclarationSyntax method:
@@ -73,6 +79,23 @@ internal static class ClassEmitter
                     break;
             }
         }
+
+        // Syntax-only resolution can't see inherited members. Hard-code the few
+        // user code actually references. Swap this for SemanticModel lookup
+        // once the base-class symbol is available.
+        AddInheritedMembers(component, names);
+
         return names;
+    }
+
+    private static void AddInheritedMembers(ClassDeclarationSyntax component, HashSet<string> names)
+    {
+        if (component.BaseList is null) return;
+
+        var baseName = component.BaseList.Types[0].Type.ToString();
+        if (baseName.EndsWith("LayoutComponentBase", StringComparison.Ordinal))
+        {
+            names.Add("Body"); // RenderFragment? inherited from LayoutComponentBase
+        }
     }
 }

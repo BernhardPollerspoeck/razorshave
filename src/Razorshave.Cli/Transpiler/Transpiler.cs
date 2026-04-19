@@ -1,5 +1,6 @@
 using System.Text;
 
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -10,9 +11,11 @@ namespace Razorshave.Cli.Transpiler;
 /// equivalent JavaScript module.
 /// </summary>
 /// <remarks>
-/// The entry point only parses the source and dispatches to the emitters — all
-/// formatting decisions (indentation, brace style, member ordering) live in the
-/// individual emitters (<see cref="ClassEmitter"/>, <see cref="FieldEmitter"/>, …).
+/// The entry point parses the source, builds a minimal compilation so that
+/// <see cref="SemanticModel"/>-aware emitters (event-handler detection,
+/// allowlist checks) can resolve symbols against the .NET shared framework,
+/// and dispatches to the individual emitters. All formatting decisions live in
+/// the emitters themselves.
 /// </remarks>
 public static class Transpiler
 {
@@ -26,6 +29,13 @@ public static class Transpiler
         ArgumentNullException.ThrowIfNull(source);
 
         var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+            assemblyName: "Razorshave.Transpile",
+            syntaxTrees: [tree],
+            references: MetadataReferenceLoader.SharedFramework(),
+            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var model = compilation.GetSemanticModel(tree);
+
         var component = tree.GetRoot()
             .DescendantNodes()
             .OfType<ClassDeclarationSyntax>()
@@ -37,7 +47,7 @@ public static class Transpiler
         }
 
         var sb = new StringBuilder();
-        ClassEmitter.Emit(component, sb);
+        ClassEmitter.Emit(component, model, sb);
         return sb.ToString();
     }
 }

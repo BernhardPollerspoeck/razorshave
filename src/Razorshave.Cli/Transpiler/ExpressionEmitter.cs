@@ -33,6 +33,18 @@ internal static class ExpressionEmitter
                 EmitIdentifier(id.Identifier.Text, sb, ctx);
                 break;
 
+            case AliasQualifiedNameSyntax alias:
+                // `global::Microsoft` → emit just `Microsoft`; JS has no alias syntax.
+                if (alias.Name is IdentifierNameSyntax aliasName)
+                {
+                    EmitIdentifier(aliasName.Identifier.Text, sb, ctx);
+                }
+                else
+                {
+                    Emit(alias.Name, sb, ctx);
+                }
+                break;
+
             case PostfixUnaryExpressionSyntax post:
                 Emit(post.Operand, sb, ctx);
                 sb.Append(post.OperatorToken.Text);
