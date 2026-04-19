@@ -1,7 +1,7 @@
 ﻿export class Counter extends Component {
   render() {
     return [
-      h(PageTitle, { 'ChildContent': /* TODO: CastExpression */ null }),
+      h(PageTitle, { 'ChildContent': () => ["Counter"] }),
       markup("\r\n\r\n"),
       markup("<h1>Counter</h1>\r\n\r\n"),
       h("p", { 'role': "status" }, "Current count: ", this.currentCount),

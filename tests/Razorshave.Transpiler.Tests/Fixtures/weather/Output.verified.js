@@ -1,7 +1,7 @@
 ﻿export class Weather extends Component {
   render() {
     return [
-      h(PageTitle, { 'ChildContent': /* TODO: CastExpression */ null }),
+      h(PageTitle, { 'ChildContent': () => ["Weather"] }),
       markup("\r\n\r\n"),
       markup("<h1>Weather</h1>\r\n\r\n"),
       markup("<p>This component demonstrates showing data.</p>"),
