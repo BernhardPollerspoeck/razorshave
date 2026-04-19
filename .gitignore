@@ -1,0 +1,44 @@
+# .NET build output
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Test results / coverage
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# JetBrains
+.idea/
+
+# VS Code
+.vscode/
+
+# Rider
+*.DotSettings.user
+
+# NuGet
+*.nupkg
+*.snupkg
+
+# Runtime (JS)
+node_modules/
+dist/
+.cache/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Razorshave output (M0+)
+**/wwwroot/_framework/
+**/dist/
+
+# Received snapshots (must review before accepting)
+*.received.*

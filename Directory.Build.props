@@ -1,0 +1,24 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest-Recommended</AnalysisLevel>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <Authors>Bernhard Pollerspöck</Authors>
+    <Company>QSP GmbH</Company>
+    <Product>Razorshave</Product>
+    <Copyright>Copyright © 2026 QSP GmbH</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+
+    <!-- Warnings we explicitly accept -->
+    <!-- CS1591: Missing XML doc — only required on Abstractions (set per-project) -->
+    <!-- CA1716: "Get"/"Set" conflict with VB keywords — our API design mirrors Blazor on purpose -->
+    <NoWarn>$(NoWarn);CS1591;CA1716</NoWarn>
+  </PropertyGroup>
+
+</Project>

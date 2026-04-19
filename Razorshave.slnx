@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/e2e/">
+    <Project Path="e2e/KitchenSink.Client/KitchenSink.Client.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Razorshave.Abstractions/Razorshave.Abstractions.csproj" />
+    <Project Path="src/Razorshave.Analyzer/Razorshave.Analyzer.csproj" />
+    <Project Path="src/Razorshave.Cli/Razorshave.Cli.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Razorshave.Analyzer.Tests/Razorshave.Analyzer.Tests.csproj" />
+    <Project Path="tests/Razorshave.SourceGenerator.Tests/Razorshave.SourceGenerator.Tests.csproj" />
+    <Project Path="tests/Razorshave.Transpiler.Tests/Razorshave.Transpiler.Tests.csproj" />
+  </Folder>
+</Solution>

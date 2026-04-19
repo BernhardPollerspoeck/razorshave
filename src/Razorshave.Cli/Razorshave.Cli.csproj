@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Razorshave.Cli</RootNamespace>
+    <AssemblyName>razorshave</AssemblyName>
+
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>razorshave</ToolCommandName>
+    <PackageId>Razorshave.Cli</PackageId>
+    <Description>Razorshave CLI — transpiles Blazor projects to static JavaScript SPAs. Install as a dotnet tool.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Razorshave.Abstractions\Razorshave.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>
