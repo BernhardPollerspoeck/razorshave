@@ -10,4 +10,8 @@
     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Razorshave.Abstractions\Razorshave.Abstractions.csproj" />
+  </ItemGroup>
+
 </Project>
