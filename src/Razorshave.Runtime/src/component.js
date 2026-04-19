@@ -1,4 +1,5 @@
 import { render } from './vdom.js';
+import { container } from './container.js';
 
 // Base class for every transpiled Razor component.
 //
@@ -34,6 +35,33 @@ export class Component {
       this._renderScheduled = false;
       if (this.shouldRender()) this._rerender();
     });
+  }
+
+  // Resolves the `_injects` manifest (emitted by ClassEmitter for every
+  // [Inject] property) against the DI container, assigning each service onto
+  // this instance. Called by mount() for the root and by vdom.js for every
+  // child component before its first render.
+  _resolveInjects(Ctor) {
+    const manifest = Ctor._injects;
+    if (!manifest) return;
+    for (const propName of Object.keys(manifest)) {
+      this[propName] = container.resolve(manifest[propName]);
+    }
+  }
+
+  // Root-level lifecycle: first render synchronously, then kick off
+  // onInitializedAsync and schedule a rerender once it resolves so any state
+  // set inside it lands on screen. Mirrors Blazor's behaviour where the first
+  // paint doesn't wait for async initialisation.
+  _lifecycleStart(Ctor) {
+    this._resolveInjects(Ctor);
+    this.onInit?.();
+    this._rerender();
+
+    const asyncInit = this.onInitializedAsync?.();
+    if (asyncInit && typeof asyncInit.then === 'function') {
+      asyncInit.then(() => this.stateHasChanged?.());
+    }
   }
 
   // Fresh render → replace. Keyed diffing is a later step; for M0 we nuke the

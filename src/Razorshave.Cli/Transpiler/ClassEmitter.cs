@@ -18,6 +18,7 @@ internal static class ClassEmitter
     {
         var name = component.Identifier.Text;
         var jsBase = ComponentClassifier.MapBaseToJs(component);
+        var injects = CollectInjects(component);
         var ctx = new EmitContext
         {
             ClassMembers = CollectMemberNames(component),
@@ -26,12 +27,25 @@ internal static class ClassEmitter
 
         sb.Append("export class ").Append(name).Append(" extends ").Append(jsBase).Append(" {\n");
 
+        // Surface [Inject] properties as a static manifest the runtime reads
+        // when constructing the component. Non-inject members keep their
+        // normal emission path.
+        EmitInjectManifest(injects, sb);
+
         foreach (var member in component.Members)
         {
             switch (member)
             {
                 case FieldDeclarationSyntax field:
                     FieldEmitter.Emit(field, sb);
+                    break;
+
+                case PropertyDeclarationSyntax prop when HasInjectAttribute(prop):
+                    // Already surfaced via the _injects manifest — nothing else to emit.
+                    break;
+
+                case PropertyDeclarationSyntax prop:
+                    PropertyEmitter.Emit(prop, sb);
                     break;
 
                 case MethodDeclarationSyntax method when method.Identifier.Text == "BuildRenderTree":
@@ -42,15 +56,59 @@ internal static class ClassEmitter
                     MethodEmitter.Emit(method, sb, ctx);
                     break;
 
-                // Properties, nested classes, constructors are handled by later
-                // walker stages. Silently ignored here so the skeleton builds
-                // incrementally.
+                // Nested classes and constructors are deferred to later stages.
                 default:
                     break;
             }
         }
 
         sb.Append("}\n");
+    }
+
+    private static void EmitInjectManifest(List<(string JsName, string ServiceKey)> injects, StringBuilder sb)
+    {
+        if (injects.Count == 0) return;
+
+        sb.Append(Indent).Append("static _injects = { ");
+        for (var i = 0; i < injects.Count; i++)
+        {
+            var (jsName, serviceKey) = injects[i];
+            sb.Append('\'').Append(jsName).Append("': '").Append(serviceKey).Append('\'');
+            if (i < injects.Count - 1) sb.Append(", ");
+        }
+        sb.Append(" };\n");
+    }
+
+    private static List<(string JsName, string ServiceKey)> CollectInjects(ClassDeclarationSyntax component)
+    {
+        var injects = new List<(string JsName, string ServiceKey)>();
+        foreach (var member in component.Members)
+        {
+            if (member is PropertyDeclarationSyntax prop && HasInjectAttribute(prop))
+            {
+                injects.Add((
+                    NameConventions.ToCamelCase(prop.Identifier.Text),
+                    NameConventions.StripQualifiers(prop.Type.ToString())
+                ));
+            }
+        }
+        return injects;
+    }
+
+    private static bool HasInjectAttribute(PropertyDeclarationSyntax property)
+    {
+        foreach (var attrList in property.AttributeLists)
+        {
+            foreach (var attr in attrList.Attributes)
+            {
+                var simple = NameConventions.StripQualifiers(attr.Name.ToString());
+                if (simple == "Inject" || simple == "InjectAttribute")
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// <summary>
@@ -80,9 +138,6 @@ internal static class ClassEmitter
             }
         }
 
-        // Syntax-only resolution can't see inherited members. Hard-code the few
-        // user code actually references. Swap this for SemanticModel lookup
-        // once the base-class symbol is available.
         AddInheritedMembers(component, names);
 
         return names;
@@ -95,7 +150,7 @@ internal static class ClassEmitter
         var baseName = component.BaseList.Types[0].Type.ToString();
         if (baseName.EndsWith("LayoutComponentBase", StringComparison.Ordinal))
         {
-            names.Add("Body"); // RenderFragment? inherited from LayoutComponentBase
+            names.Add("Body");
         }
     }
 }

@@ -12,5 +12,10 @@ export {
   FocusEventArgs,
 } from './events.js';
 export { PageTitle } from './builtins/page-title.js';
+export { NavLink } from './builtins/nav-link.js';
+export { Router, matchRoute } from './router.js';
+export { navigationManager } from './navigation-manager.js';
+export { Container, container } from './container.js';
+export { ApiClient, ApiException } from './api-client.js';
 
 export const VERSION = '0.0.1';

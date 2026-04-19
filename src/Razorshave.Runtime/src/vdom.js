@@ -34,13 +34,18 @@ export function render(vnode, owner) {
 
   if (typeof vnode.type === 'function') {
     // Component instantiation — class ref in the type slot. We pass down the
-    // props, call optional onInit, then render its VDOM like any other node.
-    // The component instance itself becomes the owner of event handlers
-    // inside its subtree, so interactions inside it trigger only its rerender.
+    // props, resolve the `_injects` manifest against the DI container, call
+    // optional onInit, then render its VDOM like any other node. The component
+    // instance itself becomes the owner of event handlers inside its subtree.
+    //
+    // Child components don't run onInitializedAsync here — the naive diff
+    // doesn't reconcile independent re-renders yet, so only the mounted root
+    // gets the full async lifecycle (see mount.js).
     const Ctor = vnode.type;
     const instance = new Ctor();
     instance.props = vnode.props || {};
     instance._childrenArg = vnode.children;
+    instance._resolveInjects?.(Ctor);
     instance.onInit?.();
     const sub = instance.render?.();
     return render(sub, instance);

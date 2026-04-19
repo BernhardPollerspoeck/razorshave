@@ -1,6 +1,7 @@
 ﻿import { h, markup, Component, LayoutComponent, EventArgs, MouseEventArgs, KeyboardEventArgs, ChangeEventArgs, FocusEventArgs, PageTitle } from '@razorshave/runtime';
 
 export class Weather extends Component {
+  static _injects = { 'weatherApi': 'IWeatherApi' };
   render() {
     const _c = [];
     _c.push(h(PageTitle, { 'ChildContent': () => ["Weather"] }));

@@ -24,4 +24,14 @@ internal static class NameConventions
             src.AsSpan(1).CopyTo(span[1..]);
         });
     }
+
+    /// <summary>
+    /// <c>global::Microsoft.AspNetCore.Components.Web.PageTitle</c> → <c>PageTitle</c>.
+    /// Strips any namespace qualifiers and <c>global::</c> alias prefix.
+    /// </summary>
+    public static string StripQualifiers(string qualifiedName)
+    {
+        var lastDot = qualifiedName.LastIndexOf('.');
+        return lastDot < 0 ? qualifiedName : qualifiedName[(lastDot + 1)..];
+    }
 }
