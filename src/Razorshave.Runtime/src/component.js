@@ -1,5 +1,15 @@
-import { render } from './vdom.js';
+import { renderComponentTree } from './vdom.js';
 import { container } from './container.js';
+
+// Module-level reference to the mounted root component. Child components
+// can't rerender themselves (they have no _container of their own under the
+// naive diff), so stateHasChanged bubbles here and re-renders the whole tree
+// from the top. mount() sets this; see setActiveRoot.
+let _activeRoot = null;
+
+export function setActiveRoot(instance) {
+  _activeRoot = instance;
+}
 
 // Base class for every transpiled Razor component.
 //
@@ -7,14 +17,26 @@ import { container } from './container.js';
 // null). State mutations are applied directly on the instance; the user (or
 // the event-handler wrapper in vdom.js) calls stateHasChanged() to queue a
 // rerender on the next frame.
+//
+// Child-instance reuse: every Component holds a Map of its last render's
+// child components keyed by their class. When the parent re-renders, vdom.js
+// looks the class up in the parent's previous map; if found, the instance is
+// reused (props updated, state preserved). That's what keeps Counter's
+// currentCount alive across parent rerenders without a full reconciler.
 
 export class Component {
   constructor() {
     this.props = {};
-    this._container = null;     // DOM element we render into
+    this._container = null;     // DOM element we render into (root only)
     this._domNodes = [];        // root nodes we currently own
     this._renderScheduled = false;
     this._hasRenderedBefore = false;
+
+    // Child components from the most recent render. Vdom.js replaces this
+    // with a fresh Map on each render and looks into the previous one via
+    // _prevChildrenForThisRender to decide reuse-vs-create.
+    this._childInstances = new Map();
+    this._prevChildrenForThisRender = null;
   }
 
   render() {
@@ -28,12 +50,17 @@ export class Component {
   onDestroy()                        {}
   shouldRender()                     { return true; }
 
+  // Schedules a rerender on the next frame. If this instance has a _container
+  // (it's the mounted root) it re-renders itself; otherwise the request
+  // bubbles to the active root — the naive diff rebuilds the subtree from
+  // the top and reuses child instances by class so local state survives.
   stateHasChanged() {
     if (this._renderScheduled) return;
     this._renderScheduled = true;
     schedule(() => {
       this._renderScheduled = false;
-      if (this.shouldRender()) this._rerender();
+      const target = this._container ? this : _activeRoot;
+      if (target && target.shouldRender()) target._rerender();
     });
   }
 
@@ -57,16 +84,12 @@ export class Component {
     this._resolveInjects(Ctor);
     this.onInit?.();
     this._rerender();
-
-    const asyncInit = this.onInitializedAsync?.();
-    if (asyncInit && typeof asyncInit.then === 'function') {
-      asyncInit.then(() => this.stateHasChanged?.());
-    }
+    kickoffAsyncInit(this);
   }
 
-  // Fresh render → replace. Keyed diffing is a later step; for M0 we nuke the
-  // previous subtree and reinsert. Performance is acceptable while there are
-  // few components and interactions.
+  // Fresh render → replace. Keyed DOM diffing is a later step; for M0 we nuke
+  // the previous subtree and reinsert. Child component instances are kept
+  // across rerenders via _childInstances so their state persists.
   _rerender() {
     if (!this._container) return;
 
@@ -75,8 +98,7 @@ export class Component {
     }
     this._domNodes = [];
 
-    const tree = this.render();
-    const produced = render(tree, this);
+    const produced = renderComponentTree(this);
     if (produced === null) return;
 
     // Track roots for the next teardown. DocumentFragments splice their
@@ -89,6 +111,17 @@ export class Component {
 
     this.onAfterRender(!this._hasRenderedBefore);
     this._hasRenderedBefore = true;
+  }
+}
+
+// Called by vdom.js whenever a component is first instantiated (root via
+// _lifecycleStart, children via the reuse path in renderComponentVnode).
+// Bubbles stateHasChanged back when the promise resolves so the UI picks up
+// any state the async hook set.
+export function kickoffAsyncInit(instance) {
+  const p = instance.onInitializedAsync?.();
+  if (p && typeof p.then === 'function') {
+    p.then(() => instance.stateHasChanged?.());
   }
 }
 

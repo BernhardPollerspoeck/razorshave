@@ -1,10 +1,17 @@
+import { kickoffAsyncInit } from './component.js';
+
 // Naive vnode → DOM renderer. Each call produces a fresh tree; re-rendering
 // on state change replaces the whole subtree via the Component base class.
-// Keyed diffing is intentionally deferred — correctness first, perf later.
+// Keyed DOM diffing is intentionally deferred — correctness first, perf later.
 //
-// owner is the Component whose render() produced the vnode. It gets notified
-// (stateHasChanged) after every event-handler invocation, giving us Blazor-
-// style auto-rerender without the user having to call it manually.
+// Child-component instance reuse: when a parent re-renders, its previous
+// child-component instances are kept around in parent._childInstances (indexed
+// by Ctor). renderComponentTree swaps that into _prevChildrenForThisRender
+// before calling render(), so any h(Ctor, …) reached inside the tree resolves
+// to the reused instance. State on those child components survives.
+//
+// owner is the Component whose render() produced the vnode. Event handlers
+// escape back to it via stateHasChanged() once their handler returns.
 
 export function render(vnode, owner) {
   if (vnode === null || vnode === undefined || vnode === false || vnode === true) {
@@ -33,22 +40,8 @@ export function render(vnode, owner) {
   }
 
   if (typeof vnode.type === 'function') {
-    // Component instantiation — class ref in the type slot. We pass down the
-    // props, resolve the `_injects` manifest against the DI container, call
-    // optional onInit, then render its VDOM like any other node. The component
-    // instance itself becomes the owner of event handlers inside its subtree.
-    //
-    // Child components don't run onInitializedAsync here — the naive diff
-    // doesn't reconcile independent re-renders yet, so only the mounted root
-    // gets the full async lifecycle (see mount.js).
-    const Ctor = vnode.type;
-    const instance = new Ctor();
-    instance.props = vnode.props || {};
-    instance._childrenArg = vnode.children;
-    instance._resolveInjects?.(Ctor);
-    instance.onInit?.();
-    const sub = instance.render?.();
-    return render(sub, instance);
+    const instance = resolveChildInstance(vnode.type, vnode.props, vnode.children, owner);
+    return renderComponentTree(instance);
   }
 
   // Ordinary HTML element
@@ -59,6 +52,52 @@ export function render(vnode, owner) {
     if (node) el.appendChild(node);
   }
   return el;
+}
+
+// Entry for rendering a Component instance's own tree: swaps in a fresh
+// _childInstances map (keeping the previous one around under
+// _prevChildrenForThisRender so resolveChildInstance can reuse instances),
+// then calls render() on the instance and produces its DOM.
+export function renderComponentTree(instance) {
+  instance._prevChildrenForThisRender = instance._childInstances;
+  instance._childInstances = new Map();
+  const tree = instance.render?.();
+  return render(tree, instance);
+}
+
+// Look up <Ctor> among the parent's previous-render children; reuse if
+// present (updating props, firing onPropsChanged), otherwise create fresh and
+// kick off its full lifecycle (resolve injects, onInit, async-init).
+function resolveChildInstance(Ctor, props, children, owner) {
+  const prevMap = owner?._prevChildrenForThisRender;
+  const reusable = prevMap?.get(Ctor);
+
+  let instance;
+  if (reusable) {
+    // Consume so a second h(Ctor, …) in the same render creates a new one
+    // instead of colliding with the reused instance.
+    prevMap.delete(Ctor);
+    instance = reusable;
+    instance.props = props || {};
+    instance._childrenArg = children;
+    instance.onPropsChanged?.();
+  } else {
+    instance = new Ctor();
+    instance.props = props || {};
+    instance._childrenArg = children;
+    instance._resolveInjects?.(Ctor);
+    instance.onInit?.();
+    // Child component's async init fires on first instantiation only. When
+    // the promise resolves we bubble stateHasChanged up so any state the
+    // hook set lands on screen.
+    kickoffAsyncInit(instance);
+  }
+
+  // Record on the parent so the NEXT render can find this instance.
+  if (owner?._childInstances) {
+    owner._childInstances.set(Ctor, instance);
+  }
+  return instance;
 }
 
 function applyProps(el, props, owner) {

@@ -10,18 +10,22 @@ import { navigationManager } from '../navigation-manager.js';
 // the same.
 export class NavLink extends Component {
   render() {
-    const href = this.props.Href ?? this.props.href ?? '#';
+    const rawHref = this.props.Href ?? this.props.href ?? '';
     const userClass = this.props.class ?? this.props.Class ?? '';
     const childContent = this.props.ChildContent?.() ?? [];
 
+    const target = normalizePath(rawHref);
     const path = navigationManager.pathname;
-    const active = isActiveFor(path, href);
+    const active = isActiveFor(path, target);
     const className = active
       ? (userClass ? `${userClass} active` : 'active')
       : userClass;
 
     return h('a', {
-      href,
+      // Rendering the normalised target (always slash-prefixed) keeps the
+      // browser's own link semantics clean — an empty href="" would otherwise
+      // tickle jsdom/some-browsers into treating the link as a reload.
+      href: target,
       class: className || null,
       onclick: (e) => {
         // Only hijack plain left-clicks; let modifier-clicks (ctrl/cmd/new tab)
@@ -30,16 +34,27 @@ export class NavLink extends Component {
         if (e.button !== 0) return;
         if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
         e.preventDefault();
-        navigationManager.navigateTo(href);
+        navigationManager.navigateTo(target);
       },
     }, ...childContent);
   }
 }
 
+// Blazor's NavLink accepts relative hrefs (`href="counter"`) whose meaning
+// depends on the containing page's base URL. Razorshave's router always
+// compares against absolute pathnames (`/counter`), so we normalise here:
+// empty → root, missing leading slash → prepend it. Comparison and
+// navigation then stay consistent.
+function normalizePath(href) {
+  if (!href) return '/';
+  return href.startsWith('/') ? href : '/' + href;
+}
+
 function isActiveFor(currentPath, href) {
   if (!href || href === '#') return false;
-  if (currentPath === href) return true;
+  const target = normalizePath(href);
+  if (currentPath === target) return true;
   // Root link matches only exactly — otherwise '/' would be always active.
-  if (href === '/') return false;
-  return currentPath.startsWith(href + '/');
+  if (target === '/') return false;
+  return currentPath.startsWith(target + '/');
 }

@@ -50,6 +50,27 @@ describe('NavLink', () => {
     expect(anchor.className).toContain('active');
   });
 
+  it('normalises relative hrefs — "counter" matches pathname "/counter"', () => {
+    // Blazor's NavMenu template uses relative hrefs; we shouldn't require
+    // the user to add leading slashes for active-class detection to work.
+    window.history.replaceState(null, '', '/counter');
+    const { anchor } = mountWith('counter');
+    expect(anchor.className).toContain('active');
+  });
+
+  it('relative href "" matches root path "/"', () => {
+    window.history.replaceState(null, '', '/');
+    const { anchor } = mountWith('');
+    expect(anchor.className).toContain('active');
+  });
+
+  it('clicking a relative-href NavLink navigates to the slash-prefixed path', () => {
+    const { anchor } = mountWith('weather');
+    const event = new MouseEvent('click', { button: 0, cancelable: true, bubbles: true });
+    anchor.dispatchEvent(event);
+    expect(navigationManager.pathname).toBe('/weather');
+  });
+
   it('left-click navigates via NavigationManager and prevents page load', () => {
     const { anchor } = mountWith('/weather');
     const event = new MouseEvent('click', { button: 0, cancelable: true, bubbles: true });

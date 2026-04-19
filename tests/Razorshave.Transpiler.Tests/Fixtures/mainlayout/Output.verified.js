@@ -1,4 +1,5 @@
-﻿import { h, markup, Component, LayoutComponent, EventArgs, MouseEventArgs, KeyboardEventArgs, ChangeEventArgs, FocusEventArgs, PageTitle } from '@razorshave/runtime';
+﻿import { h, markup, Component, LayoutComponent, EventArgs, MouseEventArgs, KeyboardEventArgs, ChangeEventArgs, FocusEventArgs, PageTitle, NavLink, Router } from '@razorshave/runtime';
+import { NavMenu } from './NavMenu.js';
 
 export class MainLayout extends LayoutComponent {
   render() {

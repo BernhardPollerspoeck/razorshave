@@ -99,3 +99,37 @@ describe('Router end-to-end', () => {
     expect(root.textContent).toMatch(/Route not found/);
   });
 });
+
+describe('Router with defaultLayout', () => {
+  beforeEach(() => {
+    window.history.replaceState(null, '', '/');
+    container.clear();
+  });
+
+  it('wraps the matched component inside the default layout', () => {
+    class Layout extends Component {
+      render() {
+        return h('div', { id: 'layout-frame' }, this.props.body);
+      }
+    }
+    class Page extends Component {
+      render() { return h('main', { id: 'page' }, 'inside'); }
+    }
+    class Root extends Component {
+      render() {
+        return h(Router, {
+          routes: [{ pattern: '/', component: Page }],
+          defaultLayout: Layout,
+        });
+      }
+    }
+
+    const root = document.createElement('div');
+    mount(Root, root);
+
+    // Layout surrounds the page — <div id="layout-frame"><main id="page">...
+    const layoutFrame = root.querySelector('#layout-frame');
+    expect(layoutFrame).not.toBeNull();
+    expect(layoutFrame.querySelector('#page')).not.toBeNull();
+  });
+});

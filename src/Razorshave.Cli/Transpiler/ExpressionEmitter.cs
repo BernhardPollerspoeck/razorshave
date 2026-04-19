@@ -22,7 +22,18 @@ internal static class ExpressionEmitter
         switch (expr)
         {
             case LiteralExpressionSyntax lit:
-                sb.Append(lit.Token.Text);
+                // C# string literals (including verbatim @"…" with embedded
+                // newlines) must be re-emitted as valid JS strings. Non-string
+                // literals (int, bool, null, float) preserve their source
+                // representation verbatim.
+                if (lit.Token.Value is string s)
+                {
+                    sb.Append(EncodeJsString(s));
+                }
+                else
+                {
+                    sb.Append(lit.Token.Text);
+                }
                 break;
 
             case ThisExpressionSyntax:
@@ -110,5 +121,41 @@ internal static class ExpressionEmitter
         {
             sb.Append(name);
         }
+    }
+
+    /// <summary>
+    /// Encode a string as a JS double-quoted literal. Escapes control chars,
+    /// quote, and backslash; leaves printable ASCII (including HTML-sensitive
+    /// characters like <c>&lt;</c>) untouched so the emitted source stays
+    /// readable and stable for snapshot tests.
+    /// </summary>
+    private static string EncodeJsString(string s)
+    {
+        var sb = new StringBuilder(s.Length + 2);
+        sb.Append('"');
+        foreach (var c in s)
+        {
+            switch (c)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '"':  sb.Append("\\\""); break;
+                case '\n': sb.Append("\\n");  break;
+                case '\r': sb.Append("\\r");  break;
+                case '\t': sb.Append("\\t");  break;
+                default:
+                    if (c < 32 || c == '\u2028' || c == '\u2029')
+                    {
+                        sb.Append(System.Globalization.CultureInfo.InvariantCulture,
+                            $"\\u{(int)c:X4}");
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+                    break;
+            }
+        }
+        sb.Append('"');
+        return sb.ToString();
     }
 }

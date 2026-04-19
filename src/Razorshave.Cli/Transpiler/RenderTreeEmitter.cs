@@ -208,7 +208,18 @@ internal static class RenderTreeEmitter
             case "AddAttribute":
             case "AddComponentParameter":
             {
-                var propName = ((LiteralExpressionSyntax)args.Arguments[1].Expression).Token.ValueText;
+                // Razor almost always emits the attribute name as a string
+                // literal. A few framework shapes (Router's AppAssembly,
+                // `@typeof(...)`-style bindings) pass a computed expression.
+                // Fall back to a TODO marker rather than crashing.
+                if (args.Arguments[1].Expression is not LiteralExpressionSyntax lit)
+                {
+                    frameStack.Peek().Props.Add((
+                        $"_dynamic{frameStack.Peek().Props.Count}",
+                        $"/* TODO: dynamic attribute name: {args.Arguments[1].Expression.Kind()} */ null"));
+                    return;
+                }
+                var propName = lit.Token.ValueText;
                 frameStack.Peek().Props.Add((propName, ResolveAttributeValue(inv, ctx)));
                 return;
             }
@@ -218,7 +229,11 @@ internal static class RenderTreeEmitter
                 return;
 
             case "AddMarkupContent":
-                destStack.Peek().Add(new LiteralOp($"markup({args.Arguments[1].Expression})"));
+                // Route through ExpressionEmitter so verbatim @"…" strings get
+                // re-emitted with JS-safe escaping (JSON.stringify). Writing
+                // args.Arguments[1].Expression.ToString() would leak the C#
+                // source form and break esbuild on multi-line raw HTML.
+                destStack.Peek().Add(new LiteralOp($"markup({EmitExpression(args.Arguments[1].Expression, ctx)})"));
                 return;
 
             default:

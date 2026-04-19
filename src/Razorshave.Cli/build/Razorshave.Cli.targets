@@ -1,0 +1,37 @@
+<Project>
+  <!--
+    Razorshave MSBuild integration. Imported automatically by consumers who
+    install Razorshave.Cli as a NuGet package (NuGet places .targets files
+    from the `build/` folder on the project's MSBuild graph). For local dev
+    the target project can <Import> this file directly.
+
+    Trigger: the custom "Razorshave" build configuration. Users opt in via
+    `dotnet build -c Razorshave`; Debug and Release remain unaffected so
+    Blazor Server dev loops don't pay the transpile cost.
+  -->
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Razorshave'">
+    <!-- Ensure the Razor source generator persists .razor.g.cs on disk so
+         the transpiler can read them. Users can override if needed. -->
+    <EmitCompilerGeneratedFiles Condition="'$(EmitCompilerGeneratedFiles)' == ''">true</EmitCompilerGeneratedFiles>
+  </PropertyGroup>
+
+  <!-- UsingTask picks up the compiled Razorshave.Cli assembly. The path is
+       resolved relative to this .targets file so the import works from both
+       the NuGet package layout (lib/net10.0/) and the local dev layout
+       (bin/$(Configuration)/net10.0/). -->
+  <UsingTask TaskName="Razorshave.Cli.RazorshaveTranspileTask"
+             AssemblyFile="$(MSBuildThisFileDirectory)..\bin\Debug\net10.0\razorshave.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\bin\Debug\net10.0\razorshave.dll')" />
+  <UsingTask TaskName="Razorshave.Cli.RazorshaveTranspileTask"
+             AssemblyFile="$(MSBuildThisFileDirectory)..\lib\net10.0\razorshave.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\lib\net10.0\razorshave.dll')" />
+
+  <Target Name="RazorshaveTranspile"
+          AfterTargets="Build"
+          Condition="'$(Configuration)' == 'Razorshave'">
+    <Message Importance="high" Text="Razorshave: triggering transpile for $(MSBuildProjectName)" />
+    <RazorshaveTranspileTask ProjectDirectory="$(MSBuildProjectDirectory)" Configuration="$(Configuration)" />
+  </Target>
+
+</Project>

@@ -51,3 +51,36 @@ describe('Counter snapshot + runtime', () => {
     expect(document.title).toBe('Counter');
   });
 });
+
+// Regression test for the M0 child-state-loss bug: before instance reuse was
+// wired into vdom.js, every parent rerender rebuilt the child component tree
+// from scratch and wiped Counter's currentCount. The production app hit this
+// via `mount(App) → Router → Counter`: clicking the button triggered a root
+// rerender, and the UI flashed back to 0. This test locks down the fix.
+import { Component } from '../component.js';
+import { h } from '../h.js';
+
+describe('Counter nested in a parent component', () => {
+  it('preserves currentCount across explicit parent rerenders', async () => {
+    class Wrapper extends Component {
+      render() { return h(Counter, {}); }
+    }
+    const container = document.createElement('div');
+    const wrapper = mount(Wrapper, container);
+
+    container.querySelector('button.btn-primary').click();
+    await nextFrame();
+    await nextFrame();
+    expect(container.querySelector('p[role="status"]').textContent).toBe('Current count: 1');
+
+    // Force a parent rerender — state must survive.
+    wrapper.stateHasChanged();
+    await nextFrame();
+    expect(container.querySelector('p[role="status"]').textContent).toBe('Current count: 1');
+
+    container.querySelector('button.btn-primary').click();
+    await nextFrame();
+    await nextFrame();
+    expect(container.querySelector('p[role="status"]').textContent).toBe('Current count: 2');
+  });
+});

@@ -14,4 +14,19 @@
     <ProjectReference Include="..\..\src\Razorshave.Abstractions\Razorshave.Abstractions.csproj" />
   </ItemGroup>
 
+  <!-- Local-dev wiring: pull in Razorshave's MSBuild target.
+       Post-NuGet-packaging this import happens automatically via the
+       Razorshave.Cli package's build/ folder. -->
+  <Import Project="..\..\src\Razorshave.Cli\build\Razorshave.Cli.targets" />
+
+  <!-- 'Razorshave' is a user-defined configuration; MSBuild also needs to
+       know that debug-symbols etc. are off by default for it. We alias it to
+       Release-style optimisation. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Razorshave'">
+    <Optimize>true</Optimize>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
 </Project>
+

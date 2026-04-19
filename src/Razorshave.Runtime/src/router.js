@@ -37,17 +37,29 @@ export function matchRoute(pattern, path) {
 export class Router extends Component {
   render() {
     const routes = this.props?.routes ?? [];
+    const layout = this.props?.defaultLayout;
     const path = navigationManager.pathname;
 
     for (const route of routes) {
       const params = matchRoute(route.pattern, path);
       if (params !== null) {
-        return h(route.component, params);
+        return wrapInLayout(h(route.component, params), layout);
       }
     }
 
     const NotFound = this.props?.notFound;
-    if (NotFound) return h(NotFound, { path });
+    if (NotFound) {
+      return wrapInLayout(h(NotFound, { path }), layout);
+    }
     return h('p', {}, 'Route not found: ' + path);
   }
+}
+
+// Wraps a matched route's vnode in the layout component when one is
+// configured, matching Blazor's <RouteView DefaultLayout="..."> shape.
+// The layout receives the route vnode as its `body` prop — LayoutComponent's
+// `body` getter (or the transpiler's inherited-member hack) picks it up from
+// there.
+function wrapInLayout(vnode, layout) {
+  return layout ? h(layout, { body: vnode }) : vnode;
 }
