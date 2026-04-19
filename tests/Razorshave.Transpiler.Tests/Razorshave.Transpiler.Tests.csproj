@@ -21,4 +21,11 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!-- Fixture files are reference data, not project source. Exclude from compile
+       and ship them alongside the test assembly so tests can read them at runtime. -->
+  <ItemGroup>
+    <Compile Remove="Fixtures\**\*.cs" />
+    <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

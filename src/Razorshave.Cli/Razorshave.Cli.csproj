@@ -19,6 +19,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Razorshave.Transpiler.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Razorshave.Abstractions\Razorshave.Abstractions.csproj" />
   </ItemGroup>
 

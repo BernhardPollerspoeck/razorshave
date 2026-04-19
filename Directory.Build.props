@@ -21,4 +21,9 @@
     <NoWarn>$(NoWarn);CS1591;CA1716</NoWarn>
   </PropertyGroup>
 
+  <!-- Test projects: allow underscores in method names (xUnit convention) -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
+  </PropertyGroup>
+
 </Project>
