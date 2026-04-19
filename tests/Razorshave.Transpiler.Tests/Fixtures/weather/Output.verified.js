@@ -2,19 +2,20 @@
 
 export class Weather extends Component {
   render() {
-    return [
-      h(PageTitle, { 'ChildContent': () => ["Weather"] }),
-      markup("\r\n\r\n"),
-      markup("<h1>Weather</h1>\r\n\r\n"),
-      markup("<p>This component demonstrates showing data.</p>"),
-      /* TODO: unsupported render stmt: IfStatement */
-    ];
+    const _c = [];
+    _c.push(h(PageTitle, { 'ChildContent': () => ["Weather"] }));
+    _c.push(markup("\n\n"));
+    _c.push(markup("<h1>Weather</h1>\n\n"));
+    _c.push(markup("<p>This component demonstrates showing data.</p>"));
+    if (this.forecasts == null) {
+      _c.push(markup("<p><em>Loading...</em></p>"));
+    } else {
+      _c.push(h("table", { 'class': "table" }, markup("<thead><tr><th>Date</th>\n                <th aria-label=\"Temperature in Celsius\">Temp. (C)</th>\n                <th aria-label=\"Temperature in Fahrenheit\">Temp. (F)</th>\n                <th>Summary</th></tr></thead>\n        "), h("tbody", {}, (() => { const _c = []; for (const forecast of this.forecasts) { _c.push(h("tr", {}, h("td", {}, forecast.date.toShortDateString()), markup("\n                    "), h("td", {}, forecast.temperatureC), markup("\n                    "), h("td", {}, forecast.temperatureF), markup("\n                    "), h("td", {}, forecast.summary))); } return _c; })())));
+    }
+    return _c;
   }
   forecasts = null;
   async onInitializedAsync() {
-    await Task.delay(500);
-    let startDate = DateOnly.fromDateTime(DateTime.now);
-    let summaries = /* TODO: ImplicitArrayCreationExpression */ null;
-    this.forecasts = Enumerable.range(1, 5).select(/* TODO: SimpleLambdaExpression */ null).toArray();
+    this.forecasts = await this.weatherApi.getForecastsAsync();
   }
 }

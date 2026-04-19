@@ -12,19 +12,30 @@ namespace Razorshave.Cli.Transpiler;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Razor emits element/component hierarchy as a flat sequence of stateful
-/// <c>__builder.OpenX / AddX / CloseX</c> calls. This emitter reconstructs the
-/// hierarchy by maintaining a frame stack: <c>Open</c> pushes, <c>AddAttribute</c>
-/// appends a prop to the top frame, <c>AddContent</c> appends a child, and
-/// <c>Close</c> pops — at which point the frame is rendered as a complete
-/// <c>h(tag, props, …children)</c> expression and added as a child to its
-/// parent.
+/// Two cooperating stacks model Razor's stateful output:
+/// <list type="bullet">
+///   <item><c>frameStack</c> tracks the current element / component — each
+///     <c>__builder.OpenX</c> pushes, each <c>CloseX</c> pops and emits the
+///     completed <c>h(tag, props, …)</c> as a child of the enclosing frame.</item>
+///   <item><c>destinationStack</c> tracks where the next child goes. At
+///     steady state this is the top frame's child-ops list, but entering an
+///     <c>if</c> / <c>foreach</c> body redirects additions into a sub-list
+///     (the conditional's <c>then</c> / <c>else</c> or the loop's body) so we
+///     preserve control flow rather than flattening it.</item>
+/// </list>
 /// </para>
 /// <para>
-/// The walker is re-entrant: a <c>RenderFragment</c> passed to AddAttribute is
-/// a lambda with its own <c>__builderN</c> parameter. <see cref="EmitBuilderBlock"/>
-/// takes the builder identifier as a parameter, so the same logic handles the
-/// top-level <c>__builder</c> and any nested fragment builder.
+/// A frame whose children are all direct literals emits inline varargs —
+/// <c>h(tag, props, a, b, c)</c> — preserving readable output for the common
+/// case. A frame carrying any <c>if</c> / <c>foreach</c> op instead emits an
+/// IIFE that accumulates into an array, so dynamic child counts work without
+/// reshaping the overall expression tree. Top-level <c>render()</c> uses the
+/// same distinction but inlines the accumulator into the method body because
+/// it is already inside a function scope.
+/// </para>
+/// <para>
+/// RenderFragment lambdas (<c>__builder2</c>) recurse through
+/// <see cref="EmitBuilderBlock"/> with a different builder name.
 /// </para>
 /// </remarks>
 internal static class RenderTreeEmitter
@@ -35,53 +46,126 @@ internal static class RenderTreeEmitter
     {
         sb.Append(ClassEmitter.Indent).Append("render() {\n");
 
-        var children = buildRenderTree.Body is { } block
+        var ops = buildRenderTree.Body is { } block
             ? EmitBuilderBlock(block, builderName: "__builder", ctx)
             : [];
 
-        EmitReturn(children, sb);
+        EmitTopLevelReturn(ops, sb);
 
         sb.Append(ClassEmitter.Indent).Append("}\n");
     }
 
     /// <summary>
     /// Walks a block that writes to <paramref name="builderName"/> and returns
-    /// the list of top-level JS child expressions produced.
+    /// the ops accumulated at the root destination.
     /// </summary>
-    private static List<string> EmitBuilderBlock(BlockSyntax block, string builderName, EmitContext ctx)
+    private static List<ChildOp> EmitBuilderBlock(BlockSyntax block, string builderName, EmitContext ctx)
     {
-        var root = new Frame(FrameKind.Root, tag: null);
-        var stack = new Stack<Frame>();
-        stack.Push(root);
+        var rootOps = new List<ChildOp>();
 
-        foreach (var stmt in block.Statements)
-        {
-            HandleStatement(stmt, builderName, stack, ctx);
-        }
+        // Only real element/component frames live on frameStack. The "current
+        // child destination" is a separate stack so it can redirect into an
+        // if/foreach sub-list without touching element nesting.
+        var frameStack = new Stack<Frame>();
+        var destStack = new Stack<List<ChildOp>>();
+        destStack.Push(rootOps);
 
-        return root.Children;
+        WalkStatements(block.Statements, builderName, frameStack, destStack, ctx);
+
+        return rootOps;
     }
 
-    private static void HandleStatement(StatementSyntax stmt, string builderName, Stack<Frame> stack, EmitContext ctx)
+    private static void WalkStatements(
+        IEnumerable<StatementSyntax> stmts,
+        string builderName,
+        Stack<Frame> frameStack,
+        Stack<List<ChildOp>> destStack,
+        EmitContext ctx)
     {
-        if (stmt is ExpressionStatementSyntax { Expression: InvocationExpressionSyntax inv }
-            && inv.Expression is MemberAccessExpressionSyntax mae
-            && mae.Expression is IdentifierNameSyntax id
-            && id.Identifier.Text == builderName)
+        foreach (var stmt in stmts)
         {
-            HandleBuilderCall(inv, builderName, stack, ctx);
-            return;
+            HandleStatement(stmt, builderName, frameStack, destStack, ctx);
         }
+    }
 
-        // Control flow (if/foreach), local declarations, nested-builder references
-        // etc. aren't handled here — later walker stages own those.
-        stack.Peek().Children.Add($"/* TODO: unsupported render stmt: {stmt.Kind()} */");
+    private static void HandleStatement(
+        StatementSyntax stmt,
+        string builderName,
+        Stack<Frame> frameStack,
+        Stack<List<ChildOp>> destStack,
+        EmitContext ctx)
+    {
+        switch (stmt)
+        {
+            case ExpressionStatementSyntax { Expression: InvocationExpressionSyntax inv }
+                when inv.Expression is MemberAccessExpressionSyntax mae
+                  && mae.Expression is IdentifierNameSyntax id
+                  && id.Identifier.Text == builderName:
+                HandleBuilderCall(inv, builderName, frameStack, destStack, ctx);
+                return;
+
+            case IfStatementSyntax ifStmt:
+                HandleIf(ifStmt, builderName, frameStack, destStack, ctx);
+                return;
+
+            case ForEachStatementSyntax feStmt:
+                HandleForEach(feStmt, builderName, frameStack, destStack, ctx);
+                return;
+
+            case BlockSyntax block:
+                WalkStatements(block.Statements, builderName, frameStack, destStack, ctx);
+                return;
+
+            default:
+                destStack.Peek().Add(new LiteralOp($"/* TODO: unsupported render stmt: {stmt.Kind()} */"));
+                return;
+        }
+    }
+
+    private static void HandleIf(
+        IfStatementSyntax ifStmt,
+        string builderName,
+        Stack<Frame> frameStack,
+        Stack<List<ChildOp>> destStack,
+        EmitContext ctx)
+    {
+        var cond = EmitExpression(ifStmt.Condition, ctx);
+        var ifOp = new IfOp(cond);
+        destStack.Peek().Add(ifOp);
+
+        destStack.Push(ifOp.Then);
+        HandleStatement(ifStmt.Statement, builderName, frameStack, destStack, ctx);
+        destStack.Pop();
+
+        if (ifStmt.Else is { } elseClause)
+        {
+            destStack.Push(ifOp.Else);
+            HandleStatement(elseClause.Statement, builderName, frameStack, destStack, ctx);
+            destStack.Pop();
+        }
+    }
+
+    private static void HandleForEach(
+        ForEachStatementSyntax feStmt,
+        string builderName,
+        Stack<Frame> frameStack,
+        Stack<List<ChildOp>> destStack,
+        EmitContext ctx)
+    {
+        var iterable = EmitExpression(feStmt.Expression, ctx);
+        var loopOp = new LoopOp(feStmt.Identifier.Text, iterable);
+        destStack.Peek().Add(loopOp);
+
+        destStack.Push(loopOp.Body);
+        HandleStatement(feStmt.Statement, builderName, frameStack, destStack, ctx);
+        destStack.Pop();
     }
 
     private static void HandleBuilderCall(
         InvocationExpressionSyntax inv,
         string builderName,
-        Stack<Frame> stack,
+        Stack<Frame> frameStack,
+        Stack<List<ChildOp>> destStack,
         EmitContext ctx)
     {
         var methodName = ((MemberAccessExpressionSyntax)inv.Expression).Name;
@@ -92,71 +176,57 @@ internal static class RenderTreeEmitter
         {
             case "OpenElement":
             {
-                // __builder.OpenElement(seq, "tag")
-                var tag = args.Arguments[1].Expression.ToString(); // preserves quotes
-                stack.Push(new Frame(FrameKind.Element, tag));
-                break;
+                var newFrame = new Frame(FrameKind.Element, args.Arguments[1].Expression.ToString());
+                frameStack.Push(newFrame);
+                destStack.Push(newFrame.ChildrenOps);
+                return;
             }
 
             case "OpenComponent":
             {
-                // __builder.OpenComponent<T>(seq) — type from generic args on methodName
                 var typeName = methodName is GenericNameSyntax g
                     ? StripGlobalAndNamespace(g.TypeArgumentList.Arguments[0].ToString())
                     : "UnknownComponent";
-                stack.Push(new Frame(FrameKind.Component, typeName));
-                break;
+                var newFrame = new Frame(FrameKind.Component, typeName);
+                frameStack.Push(newFrame);
+                destStack.Push(newFrame.ChildrenOps);
+                return;
             }
 
             case "CloseElement":
             case "CloseComponent":
-            {
-                if (stack.Count <= 1)
+                if (frameStack.Count == 0)
                 {
-                    stack.Peek().Children.Add("/* TODO: unbalanced Close */");
-                    break;
+                    destStack.Peek().Add(new LiteralOp("/* TODO: unbalanced Close */"));
+                    return;
                 }
-                var frame = stack.Pop();
-                stack.Peek().Children.Add(EmitFrame(frame));
-                break;
-            }
+                var frame = frameStack.Pop();
+                destStack.Pop();
+                destStack.Peek().Add(new LiteralOp(EmitFrame(frame)));
+                return;
 
             case "AddAttribute":
             case "AddComponentParameter":
             {
                 var propName = ((LiteralExpressionSyntax)args.Arguments[1].Expression).Token.ValueText;
-                stack.Peek().Props.Add((propName, ResolveAttributeValue(inv, ctx)));
-                break;
+                frameStack.Peek().Props.Add((propName, ResolveAttributeValue(inv, ctx)));
+                return;
             }
 
             case "AddContent":
-            {
-                var contentJs = EmitExpression(args.Arguments[1].Expression, ctx);
-                stack.Peek().Children.Add(contentJs);
-                break;
-            }
+                destStack.Peek().Add(new LiteralOp(EmitExpression(args.Arguments[1].Expression, ctx)));
+                return;
 
             case "AddMarkupContent":
-            {
-                var rawHtml = args.Arguments[1].Expression.ToString();
-                stack.Peek().Children.Add($"markup({rawHtml})");
-                break;
-            }
+                destStack.Peek().Add(new LiteralOp($"markup({args.Arguments[1].Expression})"));
+                return;
 
             default:
-            {
-                stack.Peek().Children.Add($"/* TODO: {builderName}.{name} */");
-                break;
-            }
+                destStack.Peek().Add(new LiteralOp($"/* TODO: {builderName}.{name} */"));
+                return;
         }
     }
 
-    /// <summary>
-    /// Emits the value argument of an AddAttribute / AddComponentParameter call.
-    /// Handles the three special cases in priority order — 2-arg marker, generic
-    /// <c>AddAttribute&lt;T&gt;</c> event-handler overload, RenderFragment-cast-over-lambda —
-    /// and falls back to <see cref="ExpressionEmitter"/> for everything else.
-    /// </summary>
     private static string ResolveAttributeValue(InvocationExpressionSyntax addAttrInv, EmitContext ctx)
     {
         var args = addAttrInv.ArgumentList.Arguments;
@@ -177,15 +247,6 @@ internal static class RenderTreeEmitter
         return EmitExpression(valueExpr, ctx);
     }
 
-    /// <summary>
-    /// Recognises the event-handler form of <c>AddAttribute</c>:
-    /// <c>__builder.AddAttribute&lt;TEventArgs&gt;(seq, "onclick", EventCallback.Factory.Create&lt;TEventArgs&gt;(this, Handler))</c>.
-    /// </summary>
-    /// <remarks>
-    /// Detection is semantic: the outer <c>AddAttribute</c>'s resolved symbol is
-    /// generic exactly for this overload, and its single type argument is the
-    /// EventArgs type Razor inferred from the inner <c>EventCallback&lt;T&gt;</c>.
-    /// </remarks>
     private static bool TryEmitEventHandler(
         InvocationExpressionSyntax addAttributeInv,
         ExpressionSyntax valueExpr,
@@ -193,7 +254,6 @@ internal static class RenderTreeEmitter
         out string handlerJs)
     {
         handlerJs = "";
-
         if (ctx.Model.GetSymbolInfo(addAttributeInv).Symbol is not IMethodSymbol m
             || !m.IsGenericMethod
             || m.Name != "AddAttribute"
@@ -218,62 +278,29 @@ internal static class RenderTreeEmitter
         return true;
     }
 
-    /// <summary>
-    /// Recognises an inline RenderFragment: <c>(RenderFragment)((__builderN) => { … })</c>
-    /// and recursively walks its body with <c>__builderN</c> as the active builder.
-    /// Emits a JS arrow function returning the child array.
-    /// </summary>
-    /// <remarks>
-    /// Only the non-generic <c>RenderFragment</c> form is handled here. The
-    /// typed variant <c>RenderFragment&lt;T&gt;</c> (seen in Routes.razor as
-    /// <c>Router.Found</c>) has a two-level lambda shape and is deferred — the
-    /// Router special-case in 5.12 will unpack it directly.
-    /// </remarks>
     private static bool TryEmitRenderFragment(ExpressionSyntax valueExpr, EmitContext ctx, out string js)
     {
         js = "";
+        if (valueExpr is not CastExpressionSyntax cast) return false;
+        if (StripGlobalAndNamespace(cast.Type.ToString()) != "RenderFragment") return false;
 
-        if (valueExpr is not CastExpressionSyntax cast)
-        {
-            return false;
-        }
-
-        if (StripGlobalAndNamespace(cast.Type.ToString()) != "RenderFragment")
-        {
-            return false;
-        }
-
-        // Peel off parens around the lambda
         var inner = cast.Expression;
-        while (inner is ParenthesizedExpressionSyntax paren)
-        {
-            inner = paren.Expression;
-        }
+        while (inner is ParenthesizedExpressionSyntax paren) inner = paren.Expression;
 
         var (builderName, body) = inner switch
         {
             SimpleLambdaExpressionSyntax sl when sl.Body is BlockSyntax slBlock
                 => (sl.Parameter.Identifier.Text, slBlock),
-
             ParenthesizedLambdaExpressionSyntax pl
                 when pl.ParameterList.Parameters.Count == 1
                   && pl.Body is BlockSyntax plBlock
                 => (pl.ParameterList.Parameters[0].Identifier.Text, plBlock),
-
             _ => (null, null),
         };
-        if (builderName is null || body is null)
-        {
-            return false;
-        }
+        if (builderName is null || body is null) return false;
 
-        var children = EmitBuilderBlock(body, builderName, ctx);
-        js = children.Count switch
-        {
-            0 => "() => []",
-            1 => $"() => [{children[0]}]",
-            _ => "() => [" + string.Join(", ", children) + "]",
-        };
+        var ops = EmitBuilderBlock(body, builderName, ctx);
+        js = $"() => {EmitOpsAsArrayExpression(ops)}";
         return true;
     }
 
@@ -284,58 +311,189 @@ internal static class RenderTreeEmitter
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Emit a frame as <c>h(tag, props, …)</c>. All-literal children use inline
+    /// varargs; any control-flow op switches to an IIFE accumulator.
+    /// </summary>
     private static string EmitFrame(Frame frame)
     {
         var sb = new StringBuilder();
-        sb.Append("h(").Append(frame.Tag);
+        sb.Append("h(").Append(frame.Tag).Append(", ");
+        EmitPropsObject(frame.Props, sb);
 
-        sb.Append(", ");
-        if (frame.Props.Count == 0)
+        if (frame.ChildrenOps.Count == 0)
         {
-            sb.Append("{}");
+            sb.Append(')');
+            return sb.ToString();
         }
-        else
+
+        if (frame.ChildrenOps.TrueForAll(op => op is LiteralOp))
         {
-            sb.Append("{ ");
-            for (var i = 0; i < frame.Props.Count; i++)
+            foreach (var op in frame.ChildrenOps)
             {
-                var (n, v) = frame.Props[i];
-                sb.Append('\'').Append(n).Append("': ").Append(v);
-                if (i < frame.Props.Count - 1) sb.Append(", ");
+                sb.Append(", ").Append(((LiteralOp)op).Js);
             }
-            sb.Append(" }");
+            sb.Append(')');
+            return sb.ToString();
         }
 
-        foreach (var child in frame.Children)
-        {
-            sb.Append(", ").Append(child);
-        }
-
+        sb.Append(", ").Append(EmitDynamicChildrenExpression(frame.ChildrenOps));
         sb.Append(')');
         return sb.ToString();
     }
 
-    private static void EmitReturn(List<string> children, StringBuilder sb)
+    private static void EmitPropsObject(List<(string Name, string Value)> props, StringBuilder sb)
     {
-        if (children.Count == 0)
+        if (props.Count == 0)
+        {
+            sb.Append("{}");
+            return;
+        }
+        sb.Append("{ ");
+        for (var i = 0; i < props.Count; i++)
+        {
+            var (n, v) = props[i];
+            sb.Append('\'').Append(n).Append("': ").Append(v);
+            if (i < props.Count - 1) sb.Append(", ");
+        }
+        sb.Append(" }");
+    }
+
+    /// <summary>
+    /// Emit a list of ops as a JS expression that produces an array.
+    /// Used for RenderFragment body and nested dynamic-children IIFEs.
+    /// </summary>
+    private static string EmitOpsAsArrayExpression(List<ChildOp> ops)
+    {
+        if (ops.Count == 0) return "[]";
+        if (ops.TrueForAll(op => op is LiteralOp))
+        {
+            var sb = new StringBuilder();
+            sb.Append('[');
+            for (var i = 0; i < ops.Count; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                sb.Append(((LiteralOp)ops[i]).Js);
+            }
+            sb.Append(']');
+            return sb.ToString();
+        }
+        return EmitDynamicChildrenExpression(ops);
+    }
+
+    /// <summary>
+    /// Emit a list of ops as an IIFE that returns the accumulated array.
+    /// Always parenthesised so it can sit in an expression position
+    /// (e.g., as an <c>h(...)</c> argument).
+    /// </summary>
+    private static string EmitDynamicChildrenExpression(List<ChildOp> ops)
+    {
+        var sb = new StringBuilder();
+        sb.Append("(() => { const _c = []; ");
+        foreach (var op in ops)
+        {
+            EmitOpIntoAccumulator(op, "_c", sb);
+        }
+        sb.Append("return _c; })()");
+        return sb.ToString();
+    }
+
+    private static void EmitOpIntoAccumulator(ChildOp op, string acc, StringBuilder sb)
+    {
+        switch (op)
+        {
+            case LiteralOp lit:
+                sb.Append(acc).Append(".push(").Append(lit.Js).Append("); ");
+                return;
+
+            case IfOp ifOp:
+                sb.Append("if (").Append(ifOp.Cond).Append(") { ");
+                foreach (var o in ifOp.Then) EmitOpIntoAccumulator(o, acc, sb);
+                sb.Append('}');
+                if (ifOp.Else.Count > 0)
+                {
+                    sb.Append(" else { ");
+                    foreach (var o in ifOp.Else) EmitOpIntoAccumulator(o, acc, sb);
+                    sb.Append('}');
+                }
+                sb.Append(' ');
+                return;
+
+            case LoopOp loop:
+                sb.Append("for (const ").Append(loop.VarName).Append(" of ").Append(loop.Iterable).Append(") { ");
+                foreach (var o in loop.Body) EmitOpIntoAccumulator(o, acc, sb);
+                sb.Append("} ");
+                return;
+        }
+    }
+
+    /// <summary>
+    /// Render-method top-level return: inline array for all-literal, multi-line
+    /// accumulator block when control-flow ops are present. Slightly different
+    /// from the nested case because we're already inside a function body.
+    /// </summary>
+    private static void EmitTopLevelReturn(List<ChildOp> rootOps, StringBuilder sb)
+    {
+        if (rootOps.Count == 0)
         {
             sb.Append(ReturnIndent).Append("return null;\n");
             return;
         }
-        if (children.Count == 1)
+
+        if (rootOps.TrueForAll(op => op is LiteralOp))
         {
-            sb.Append(ReturnIndent).Append("return ").Append(children[0]).Append(";\n");
+            if (rootOps.Count == 1)
+            {
+                sb.Append(ReturnIndent).Append("return ").Append(((LiteralOp)rootOps[0]).Js).Append(";\n");
+                return;
+            }
+            sb.Append(ReturnIndent).Append("return [\n");
+            for (var i = 0; i < rootOps.Count; i++)
+            {
+                sb.Append(ReturnIndent).Append("  ").Append(((LiteralOp)rootOps[i]).Js);
+                if (i < rootOps.Count - 1) sb.Append(',');
+                sb.Append('\n');
+            }
+            sb.Append(ReturnIndent).Append("];\n");
             return;
         }
 
-        sb.Append(ReturnIndent).Append("return [\n");
-        for (var i = 0; i < children.Count; i++)
+        // Dynamic top-level: accumulate inline, no IIFE wrapper needed.
+        sb.Append(ReturnIndent).Append("const _c = [];\n");
+        foreach (var op in rootOps)
         {
-            sb.Append(ReturnIndent).Append("  ").Append(children[i]);
-            if (i < children.Count - 1) sb.Append(',');
-            sb.Append('\n');
+            EmitOpAtTopLevel(op, "_c", sb, ReturnIndent);
         }
-        sb.Append(ReturnIndent).Append("];\n");
+        sb.Append(ReturnIndent).Append("return _c;\n");
+    }
+
+    private static void EmitOpAtTopLevel(ChildOp op, string acc, StringBuilder sb, string indent)
+    {
+        switch (op)
+        {
+            case LiteralOp lit:
+                sb.Append(indent).Append(acc).Append(".push(").Append(lit.Js).Append(");\n");
+                return;
+
+            case IfOp ifOp:
+                sb.Append(indent).Append("if (").Append(ifOp.Cond).Append(") {\n");
+                foreach (var o in ifOp.Then) EmitOpAtTopLevel(o, acc, sb, indent + "  ");
+                sb.Append(indent).Append('}');
+                if (ifOp.Else.Count > 0)
+                {
+                    sb.Append(" else {\n");
+                    foreach (var o in ifOp.Else) EmitOpAtTopLevel(o, acc, sb, indent + "  ");
+                    sb.Append(indent).Append('}');
+                }
+                sb.Append('\n');
+                return;
+
+            case LoopOp loop:
+                sb.Append(indent).Append("for (const ").Append(loop.VarName).Append(" of ").Append(loop.Iterable).Append(") {\n");
+                foreach (var o in loop.Body) EmitOpAtTopLevel(o, acc, sb, indent + "  ");
+                sb.Append(indent).Append("}\n");
+                return;
+        }
     }
 
     /// <summary>
@@ -347,19 +505,29 @@ internal static class RenderTreeEmitter
         return lastDot < 0 ? qualified : qualified[(lastDot + 1)..];
     }
 
-    private enum FrameKind { Root, Element, Component }
+    private enum FrameKind { Element, Component }
 
-    private sealed class Frame
+    private sealed class Frame(FrameKind kind, string? tag)
     {
-        public Frame(FrameKind kind, string? tag)
-        {
-            Kind = kind;
-            Tag = tag;
-        }
-
-        public FrameKind Kind { get; }
-        public string? Tag { get; }
+        public FrameKind Kind { get; } = kind;
+        public string? Tag { get; } = tag;
         public List<(string Name, string Value)> Props { get; } = [];
-        public List<string> Children { get; } = [];
+        public List<ChildOp> ChildrenOps { get; } = [];
+    }
+
+    // Child-production ops — what to emit into the current frame's children list.
+    private abstract class ChildOp { }
+    private sealed class LiteralOp(string js) : ChildOp { public string Js { get; } = js; }
+    private sealed class IfOp(string cond) : ChildOp
+    {
+        public string Cond { get; } = cond;
+        public List<ChildOp> Then { get; } = [];
+        public List<ChildOp> Else { get; } = [];
+    }
+    private sealed class LoopOp(string varName, string iterable) : ChildOp
+    {
+        public string VarName { get; } = varName;
+        public string Iterable { get; } = iterable;
+        public List<ChildOp> Body { get; } = [];
     }
 }
