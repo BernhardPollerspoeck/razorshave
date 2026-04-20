@@ -35,7 +35,7 @@ internal static class HeaderEmitter
         "Component", "LayoutComponent",
         "EventArgs", "MouseEventArgs", "KeyboardEventArgs", "ChangeEventArgs", "FocusEventArgs",
         "ApiClient", "ApiException",
-        "_isNullOrWhiteSpace", "_isNullOrEmpty", "_newGuid",
+        "_isNullOrWhiteSpace", "_isNullOrEmpty", "_newGuid", "_listRemove",
     ];
     private static readonly string[] RuntimeComponents = ["PageTitle", "NavLink", "Router"];
     private static readonly string RuntimeImports =

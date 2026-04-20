@@ -60,3 +60,15 @@ export function _newGuid() {
     return v.toString(16);
   });
 }
+
+// `List<T>.Remove(item)` — .NET signature returns bool (true if removed).
+// Mirrors by indexOf + splice. Both arguments evaluate exactly once at the
+// call site (the transpiler routes through here specifically to avoid the
+// double-evaluation the naive inline rewrite would cause).
+export function _listRemove(arr, item) {
+  if (!arr) return false;
+  const i = arr.indexOf(item);
+  if (i < 0) return false;
+  arr.splice(i, 1);
+  return true;
+}

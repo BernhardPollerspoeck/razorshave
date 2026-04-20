@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { _isNullOrWhiteSpace, _isNullOrEmpty, _newGuid } from './bcl.js';
+import { _isNullOrWhiteSpace, _isNullOrEmpty, _newGuid, _listRemove } from './bcl.js';
 
 describe('_isNullOrWhiteSpace (string.IsNullOrWhiteSpace bridge)', () => {
   it('returns true for null / undefined / "" / whitespace-only strings', () => {
@@ -74,5 +74,33 @@ describe('_newGuid (Guid.NewGuid bridge)', () => {
       spy.mockRestore();
       warnSpy.mockRestore();
     }
+  });
+});
+
+describe('_listRemove (List<T>.Remove bridge)', () => {
+  it('returns true-only-on-remove and mutates the array in place', () => {
+    const xs = ['a', 'b', 'c'];
+    expect(_listRemove(xs, 'b')).toBe(true);
+    expect(xs).toEqual(['a', 'c']);
+  });
+
+  it('returns false when the item is not in the array', () => {
+    const xs = [1, 2, 3];
+    expect(_listRemove(xs, 99)).toBe(false);
+    expect(xs).toEqual([1, 2, 3]);
+  });
+
+  it('treats null/undefined receivers as an empty list (no throw)', () => {
+    // Defensive for the transpiler: an uninitialised field marked
+    // `List<T>? xs` is `null` in C# and `undefined` in JS. Remove() on
+    // those should be a silent no-op, not a TypeError.
+    expect(_listRemove(null, 1)).toBe(false);
+    expect(_listRemove(undefined, 1)).toBe(false);
+  });
+
+  it('removes only the first matching occurrence (matches .NET contract)', () => {
+    const xs = ['x', 'y', 'x'];
+    expect(_listRemove(xs, 'x')).toBe(true);
+    expect(xs).toEqual(['y', 'x']);
   });
 });

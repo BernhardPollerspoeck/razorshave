@@ -25,6 +25,6 @@ export { reportRuntimeError, setErrorHandler, pushErrorHandler } from './errors.
 // than via `export *` so every addition goes through an explicit review —
 // a new helper that shouldn't be part of the public API gets noticed at
 // this line instead of silently joining the export surface.
-export { _isNullOrWhiteSpace, _isNullOrEmpty, _newGuid } from './bcl.js';
+export { _isNullOrWhiteSpace, _isNullOrEmpty, _newGuid, _listRemove } from './bcl.js';
 
 export const VERSION = '0.0.1';

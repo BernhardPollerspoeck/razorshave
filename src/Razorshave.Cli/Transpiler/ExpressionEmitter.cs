@@ -270,6 +270,38 @@ internal static class ExpressionEmitter
                 // custom indexer properties map the same way; user-defined
                 // indexers that do something clever will break, but that's
                 // out of M0 scope.
+                // `arr[1..3]` (range) and `arr[^1]` (from-end) are special-
+                // cased because C# wraps the argument in a RangeExpression or
+                // IndexFromEnd unary. Map to `arr.slice(1, 3)` and
+                // `arr.at(-1)` respectively — JS-native and allocating-safe.
+                if (ea.ArgumentList.Arguments.Count == 1)
+                {
+                    var arg = ea.ArgumentList.Arguments[0].Expression;
+                    if (arg is RangeExpressionSyntax range)
+                    {
+                        Emit(ea.Expression, sb, ctx);
+                        sb.Append(".slice(");
+                        if (range.LeftOperand is not null) Emit(range.LeftOperand, sb, ctx);
+                        else sb.Append('0');
+                        if (range.RightOperand is not null)
+                        {
+                            sb.Append(", ");
+                            EmitIndexOperand(range.RightOperand, sb, ctx, arrExpr: ea.Expression);
+                        }
+                        sb.Append(')');
+                        break;
+                    }
+                    if (arg is PrefixUnaryExpressionSyntax fromEnd && fromEnd.IsKind(SyntaxKind.IndexExpression))
+                    {
+                        // `arr[^n]` → `arr.at(-n)`. Negative-indexing semantics
+                        // match C# from-end for non-empty sources.
+                        Emit(ea.Expression, sb, ctx);
+                        sb.Append(".at(-");
+                        Emit(fromEnd.Operand, sb, ctx);
+                        sb.Append(')');
+                        break;
+                    }
+                }
                 Emit(ea.Expression, sb, ctx);
                 sb.Append('[');
                 for (var i = 0; i < ea.ArgumentList.Arguments.Count; i++)
@@ -343,13 +375,22 @@ internal static class ExpressionEmitter
 
             case CollectionExpressionSyntax coll:
                 // `[1, 2, 3]` C# collection literal → same in JS.
+                // `[..a, ..b, 3]` spread → JS `[...a, ...b, 3]`. C#'s spread
+                // operator is `..`; JS's is `...` — one dot extra, same
+                // semantics when the source is an iterable.
                 sb.Append('[');
                 for (var i = 0; i < coll.Elements.Count; i++)
                 {
                     if (i > 0) sb.Append(", ");
-                    if (coll.Elements[i] is ExpressionElementSyntax ee)
+                    switch (coll.Elements[i])
                     {
-                        Emit(ee.Expression, sb, ctx);
+                        case ExpressionElementSyntax ee:
+                            Emit(ee.Expression, sb, ctx);
+                            break;
+                        case SpreadElementSyntax se:
+                            sb.Append("...");
+                            Emit(se.Expression, sb, ctx);
+                            break;
                     }
                 }
                 sb.Append(']');
@@ -559,6 +600,23 @@ internal static class ExpressionEmitter
 
     private static bool IsNullLiteral(ExpressionSyntax expr)
         => expr is LiteralExpressionSyntax lit && lit.IsKind(SyntaxKind.NullLiteralExpression);
+
+    // For the right-hand side of `arr[a..b]`: a bare value goes as-is,
+    // `^n` must become `arr.length - n` because JS `slice` has no "from-end"
+    // notation. The array expression is re-emitted into a temp StringBuilder
+    // and spliced in so the caller can keep its own output contiguous.
+    private static void EmitIndexOperand(ExpressionSyntax operand, StringBuilder sb, EmitContext ctx, ExpressionSyntax arrExpr)
+    {
+        if (operand is PrefixUnaryExpressionSyntax fromEnd && fromEnd.IsKind(SyntaxKind.IndexExpression))
+        {
+            var arrSb = new StringBuilder();
+            Emit(arrExpr, arrSb, ctx);
+            sb.Append(arrSb).Append(".length - ");
+            Emit(fromEnd.Operand, sb, ctx);
+            return;
+        }
+        Emit(operand, sb, ctx);
+    }
 
 
     // Emits an `is`-pattern expression. Only `is null` and `is not null` are

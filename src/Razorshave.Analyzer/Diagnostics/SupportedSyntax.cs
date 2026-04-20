@@ -74,6 +74,8 @@ internal static class SupportedSyntax
             SyntaxKind.SimpleMemberAccessExpression,
             SyntaxKind.InvocationExpression,
             SyntaxKind.ElementAccessExpression,
+            SyntaxKind.RangeExpression,          // `a..b` inside `arr[a..b]`
+            SyntaxKind.IndexExpression,          // `^n` inside `arr[^n]`
             SyntaxKind.ConditionalAccessExpression,  // `a?.b.c`
             SyntaxKind.MemberBindingExpression,      // `.b` inside `a?.b`
             SyntaxKind.ElementBindingExpression,     // `[i]` inside `a?[i]`
@@ -97,6 +99,7 @@ internal static class SupportedSyntax
             SyntaxKind.ImplicitArrayCreationExpression,
             SyntaxKind.ArrayInitializerExpression,
             SyntaxKind.CollectionExpression,
+            SyntaxKind.SpreadElement,
             SyntaxKind.WithExpression,
             SyntaxKind.WithInitializerExpression,
             // lambdas

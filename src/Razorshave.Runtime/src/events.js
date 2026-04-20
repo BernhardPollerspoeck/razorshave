@@ -40,6 +40,13 @@ export class KeyboardEventArgs extends EventArgs {
   get AltKey()   { return this._native.altKey; }
   get MetaKey()  { return this._native.metaKey; }
   get Repeat()   { return this._native.repeat; }
+  // Location maps the numeric DOM value (0 = standard, 1 = left, 2 = right,
+  // 3 = numpad) directly onto Blazor's identically-named property.
+  get Location() { return this._native.location; }
+  // Blazor's KeyboardEventArgs carries `IsComposing` — surface it so form
+  // components with IME compose semantics can check it without reaching
+  // into `_native`.
+  get IsComposing() { return this._native.isComposing; }
 }
 
 export class ChangeEventArgs extends EventArgs {

@@ -28,6 +28,21 @@ describe('KeyboardEventArgs', () => {
     expect(args.AltKey).toBe(true);
     expect(args.Repeat).toBe(false);
   });
+
+  it('exposes Location (numeric: 0=standard, 1=left, 2=right, 3=numpad)', () => {
+    // Blazor's KeyboardEventArgs.Location is the DOM event's `location`
+    // verbatim — differentiates left-shift from right-shift, numpad keys,
+    // etc. Was missing before Q-Batch 18.
+    const leftShift = new KeyboardEventArgs({ key: 'Shift', location: 1 });
+    const numpadPlus = new KeyboardEventArgs({ key: '+', location: 3 });
+    expect(leftShift.Location).toBe(1);
+    expect(numpadPlus.Location).toBe(3);
+  });
+
+  it('exposes IsComposing for IME-aware input handling', () => {
+    const composing = new KeyboardEventArgs({ key: 'Process', isComposing: true });
+    expect(composing.IsComposing).toBe(true);
+  });
 });
 
 describe('ChangeEventArgs', () => {

@@ -171,6 +171,21 @@ internal static class StaticMemberRewrites
             return true;
         }
 
+        // `List<T>.Remove(x)` → `_listRemove(arr, x)` via bcl helper. The
+        // helper evaluates both args exactly once, does indexOf+splice, and
+        // returns the .NET-compatible bool (true if something was removed).
+        // An inline IIFE would evaluate the receiver twice and trigger any
+        // side-effects twice; routing through the helper avoids that.
+        if (inv.ArgumentList.Arguments.Count == 1 && mae.Name.Identifier.Text == "Remove")
+        {
+            sb.Append("_listRemove(");
+            ExpressionEmitter.Emit(mae.Expression, sb, ctx);
+            sb.Append(", ");
+            ExpressionEmitter.Emit(inv.ArgumentList.Arguments[0].Expression, sb, ctx);
+            sb.Append(')');
+            return true;
+        }
+
         // Date/time formatting helpers. `DateOnly` and `DateTime` both expose
         // a family of `.ToShortDateString()` / `.ToLongTimeString()` methods.
         // We rewrite via `DateOnly.Parse` → JS `Date`, so these formatters
