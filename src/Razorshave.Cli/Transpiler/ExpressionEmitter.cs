@@ -78,8 +78,12 @@ internal static class ExpressionEmitter
 
             case BinaryExpressionSyntax bin:
                 Emit(bin.Left, sb, ctx);
-                sb.Append(' ').Append(bin.OperatorToken.Text).Append(' ');
+                sb.Append(' ').Append(MapBinaryOperator(bin)).Append(' ');
                 Emit(bin.Right, sb, ctx);
+                break;
+
+            case IsPatternExpressionSyntax isPat:
+                EmitIsPattern(isPat, sb, ctx);
                 break;
 
             case AssignmentExpressionSyntax assign:
@@ -465,6 +469,49 @@ internal static class ExpressionEmitter
         var value = new StringBuilder();
         Emit(rp.Expression, value, ctx);
         return $"{subjectJs} {op} {value}";
+    }
+
+    // Maps a C# binary operator to its JS equivalent.
+    // Equality (`==`/`!=`) promotes to strict (`===`/`!==`) to avoid JS type
+    // coercion — `"5" == 5` is true in JS but a compile error in C#. The one
+    // exception is null-comparisons, where loose (`==`/`!=`) is the better
+    // match: C# has no `undefined`, so "kein Wert" in C# should also catch
+    // the JS-side `undefined` that creeps in from optional fields.
+    private static string MapBinaryOperator(BinaryExpressionSyntax bin)
+    {
+        var kind = bin.Kind();
+        var isEq = kind == SyntaxKind.EqualsExpression;
+        var isNeq = kind == SyntaxKind.NotEqualsExpression;
+        if (!isEq && !isNeq) return bin.OperatorToken.Text;
+        if (IsNullLiteral(bin.Left) || IsNullLiteral(bin.Right)) return bin.OperatorToken.Text;
+        return isEq ? "===" : "!==";
+    }
+
+    private static bool IsNullLiteral(ExpressionSyntax expr)
+        => expr is LiteralExpressionSyntax lit && lit.IsKind(SyntaxKind.NullLiteralExpression);
+
+    // Emits an `is`-pattern expression. Only `is null` and `is not null` are
+    // supported — they map to JS `== null` / `!= null` (loose, matches C#
+    // "kein Wert" semantics). Other patterns (type, declaration, property)
+    // fall through as TODO-null until we add proper emitters; the analyzer
+    // (RZS2001) keeps them from slipping into production silently.
+    private static void EmitIsPattern(IsPatternExpressionSyntax isPat, StringBuilder sb, EmitContext ctx)
+    {
+        switch (isPat.Pattern)
+        {
+            case ConstantPatternSyntax cp when IsNullLiteral(cp.Expression):
+                Emit(isPat.Expression, sb, ctx);
+                sb.Append(" == null");
+                return;
+            case UnaryPatternSyntax { Pattern: ConstantPatternSyntax cp } up
+                when up.OperatorToken.IsKind(SyntaxKind.NotKeyword) && IsNullLiteral(cp.Expression):
+                Emit(isPat.Expression, sb, ctx);
+                sb.Append(" != null");
+                return;
+            default:
+                sb.Append("/* TODO: unsupported is-pattern ").Append(isPat.Pattern.Kind()).Append(" */ null");
+                return;
+        }
     }
 
     private static void EmitLambdaBody(CSharpSyntaxNode body, StringBuilder sb, EmitContext ctx)

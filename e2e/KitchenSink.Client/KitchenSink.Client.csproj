@@ -12,6 +12,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Razorshave.Abstractions\Razorshave.Abstractions.csproj" />
+    <!-- Analyzer reference: makes RZS2001/2002 fire in the IDE and at build
+         time for Razor components / [Client] classes that use C# constructs
+         the transpiler can't emit. OutputItemType=Analyzer marks it as a
+         compile-time analyzer rather than a regular runtime dependency. -->
+    <ProjectReference Include="..\..\src\Razorshave.Analyzer\Razorshave.Analyzer.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!-- Local-dev wiring: pull in Razorshave's MSBuild target.

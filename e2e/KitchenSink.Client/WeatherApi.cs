@@ -22,8 +22,8 @@ public sealed class WeatherApi(HttpClient http) : ApiClient(http), IWeatherApi
     public async Task<WeatherForecast[]> GetForecastsAsync()
     {
         var response = await Get<OpenMeteoResponse>(
-            "https://api.open-meteo.com/v1/forecast?latitude=48.3&longitude=14.3&daily=temperature_2m_max&timezone=Europe%2FBerlin&forecast_days=5")
-            ?? throw new InvalidOperationException("open-meteo returned an empty body");
+            "https://api.open-meteo.com/v1/forecast?latitude=48.3&longitude=14.3&daily=temperature_2m_max&timezone=Europe%2FBerlin&forecast_days=5");
+        if (response == null) return [];
 
         var forecasts = new WeatherForecast[response.Daily.Time.Length];
         for (var i = 0; i < forecasts.Length; i++)
