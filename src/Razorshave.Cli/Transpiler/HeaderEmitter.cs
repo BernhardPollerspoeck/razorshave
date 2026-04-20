@@ -26,7 +26,8 @@ internal static class HeaderEmitter
     private const string RuntimeImports =
         "h, markup, Component, LayoutComponent, " +
         "EventArgs, MouseEventArgs, KeyboardEventArgs, ChangeEventArgs, FocusEventArgs, " +
-        "PageTitle, NavLink, Router, ApiClient, ApiException";
+        "PageTitle, NavLink, Router, ApiClient, ApiException, " +
+        "_isNullOrWhiteSpace, _isNullOrEmpty";
 
     /// <summary>
     /// Components supplied by <c>@razorshave/runtime</c> — never import these

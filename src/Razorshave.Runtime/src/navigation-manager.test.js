@@ -45,4 +45,21 @@ describe('NavigationManager', () => {
     expect(b).toHaveBeenCalledWith('/x');
     unsubA(); unsubB();
   });
+
+  it('listener that unsubscribes during dispatch does not break iteration', () => {
+    // Regression for the live-Set iteration bug: _emit used to iterate the
+    // listener Set directly, so a listener calling its own unsub (or
+    // onLocationChanged to add another) during dispatch would corrupt the
+    // walk and silently skip or re-fire listeners.
+    const offs = [];
+    const a = vi.fn(() => offs[0]());
+    const b = vi.fn();
+    offs.push(navigationManager.onLocationChanged(a));
+    const unsubB = navigationManager.onLocationChanged(b);
+
+    expect(() => navigationManager.navigateTo('/x')).not.toThrow();
+    expect(a).toHaveBeenCalledOnce();
+    expect(b).toHaveBeenCalledOnce();
+    unsubB();
+  });
 });

@@ -104,21 +104,20 @@ internal static class StaticMemberRewrites
             case ("string", "IsNullOrWhiteSpace"):
             case ("String", "IsNullOrWhiteSpace"):
                 if (args.Count != 1) return false;
-                sb.Append('(');
+                // Route through runtime helper so the argument expression
+                // evaluates exactly once — an inline `x == null || x.trim()`
+                // would emit the expression twice and run side-effects twice.
+                sb.Append("_isNullOrWhiteSpace(");
                 ExpressionEmitter.Emit(args[0].Expression, sb, ctx);
-                sb.Append(" == null || ");
-                ExpressionEmitter.Emit(args[0].Expression, sb, ctx);
-                sb.Append(".trim() === \"\")");
+                sb.Append(')');
                 return true;
 
             case ("string", "IsNullOrEmpty"):
             case ("String", "IsNullOrEmpty"):
                 if (args.Count != 1) return false;
-                sb.Append('(');
+                sb.Append("_isNullOrEmpty(");
                 ExpressionEmitter.Emit(args[0].Expression, sb, ctx);
-                sb.Append(" == null || ");
-                ExpressionEmitter.Emit(args[0].Expression, sb, ctx);
-                sb.Append(" === \"\")");
+                sb.Append(')');
                 return true;
 
             case ("Guid", "NewGuid"):

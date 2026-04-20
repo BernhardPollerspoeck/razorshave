@@ -1,4 +1,4 @@
-﻿import { h, markup, Component, LayoutComponent, EventArgs, MouseEventArgs, KeyboardEventArgs, ChangeEventArgs, FocusEventArgs, PageTitle, NavLink, Router, ApiClient, ApiException } from '@razorshave/runtime';
+﻿import { h, markup, Component, LayoutComponent, EventArgs, MouseEventArgs, KeyboardEventArgs, ChangeEventArgs, FocusEventArgs, PageTitle, NavLink, Router, ApiClient, ApiException, _isNullOrWhiteSpace, _isNullOrEmpty } from '@razorshave/runtime';
 
 export class Weather extends Component {
   static _injects = { 'weatherApi': 'IWeatherApi' };

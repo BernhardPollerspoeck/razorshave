@@ -176,7 +176,14 @@ internal static class RenderTreeEmitter
         {
             case "OpenElement":
             {
-                var newFrame = new Frame(FrameKind.Element, args.Arguments[1].Expression.ToString());
+                // The tag argument is usually a string literal (`"div"`) but
+                // could in principle be any expression. Route through
+                // ExpressionEmitter so literals emit as JS-quoted strings and
+                // computed tags are emitted as JS expressions — rather than
+                // relying on Roslyn's `.ToString()` returning valid JS by
+                // coincidence (which only works for string literals).
+                var tagJs = EmitExpression(args.Arguments[1].Expression, ctx);
+                var newFrame = new Frame(FrameKind.Element, tagJs);
                 frameStack.Push(newFrame);
                 destStack.Push(newFrame.ChildrenOps);
                 return;

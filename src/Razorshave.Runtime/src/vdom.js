@@ -10,6 +10,20 @@ import { reportRuntimeError } from './errors.js';
 // identity, attribute changes are applied, only structurally new subtrees
 // get created.
 //
+// Component DOM boundaries — comment-marker model.
+//
+// Every mounted component vnode is bracketed by two Comment nodes:
+// `<!--rs-->` before the subtree, `<!--/rs-->` after. Keeping the markers
+// present even when the component renders `null` means every component
+// always has a stable DOM range (`_startMarker` to `_endMarker`), so:
+//   * patchComponent can insert new content between the markers even after
+//     a render that returned `null` (no "null-host skip" gap),
+//   * keyed-list reorder can move the whole range as one unit, picking up
+//     multi-root fragment returns for free,
+//   * removeFromDom has a deterministic span to tear down.
+// The markers cost 2 DOM nodes per mounted component; negligible compared
+// to the correctness and simplicity wins.
+//
 // vnode shapes:
 //   primitive string/number   — raw text, normalised to {_kind:'text'} during
 //                               mount so the resulting Text node can be
@@ -23,10 +37,13 @@ import { reportRuntimeError } from './errors.js';
 //                                            normalisation
 //
 // Mount-time properties added to vnodes:
-//   _dom            — DOM node for element / text vnodes
-//   _markupNodes    — array of DOM roots for a markup vnode
-//   _children       — normalised children (primitives wrapped as text vnodes)
-//   _instance       — Component instance for component vnodes
+//   _dom                         — DOM node for element / text vnodes
+//   _markupNodes                 — array of DOM roots for a markup vnode
+//   _children                    — normalised children (primitives wrapped
+//                                  as text vnodes)
+//   _instance                    — Component instance for component vnodes
+//   _startMarker / _endMarker    — Comment nodes bracketing a component's
+//                                  DOM subtree
 //
 // We mutate vnodes intentionally — this matches Preact's approach and keeps
 // the bookkeeping off to the side of user code.
@@ -73,7 +90,7 @@ export function render(vnode, owner) {
 export function patchRoot(container, oldVtree, newVtree, owner) {
   const oldList = asList(oldVtree);
   const newList = asList(newVtree);
-  patchChildren(container, oldList, newList, owner);
+  patchChildren(container, oldList, newList, owner, /* endAnchor */ null);
   return newVtree;
 }
 
@@ -160,8 +177,24 @@ function mountComponent(vnode, owner) {
   const subtree = instance.render?.();
   const wrapped = wrapTopLevel(subtree);
   instance._vtree = wrapped;
-  const dom = createDom(wrapped, instance);
-  return dom;
+
+  // Wrap the subtree in comment markers so the component's DOM range is
+  // always identifiable, even when `render()` returned null. The markers
+  // let subsequent patches (null → content, reorder, unmount) work without
+  // needing to locate a "first child" that may not exist.
+  //
+  // Marker text carries the Component's class name — purely for DevTools
+  // readability. The runtime only ever uses the Node identity, so the text
+  // can be anything; naming helps when debugging deeply nested trees.
+  const name = Ctor.name || 'Component';
+  const frag = document.createDocumentFragment();
+  vnode._startMarker = document.createComment(` rs:${name} `);
+  vnode._endMarker = document.createComment(` /rs:${name} `);
+  frag.appendChild(vnode._startMarker);
+  const subDom = createDom(wrapped, instance);
+  if (subDom) frag.appendChild(subDom);
+  frag.appendChild(vnode._endMarker);
+  return frag;
 }
 
 // --- props + listeners ---
@@ -248,14 +281,14 @@ async function trampoline(e) {
 
 // --- patch ---
 
-function patchNode(parent, oldVnode, newVnode, owner) {
+function patchNode(parent, oldVnode, newVnode, owner, endAnchor) {
   if (isVoid(newVnode)) {
     if (!isVoid(oldVnode)) removeFromDom(oldVnode);
     return null;
   }
   if (isVoid(oldVnode)) {
     const node = createDom(newVnode, owner);
-    if (node) parent.appendChild(node);
+    if (node) parent.insertBefore(node, endAnchor);
     return newVnode;
   }
 
@@ -302,13 +335,15 @@ function patchNode(parent, oldVnode, newVnode, owner) {
     return newVnode;
   }
 
-  // Type mismatch → replace in place
+  // Type mismatch → replace in place. Capture the anchor *before* removal so
+  // the replacement lands at the old node's slot rather than being appended.
   const firstOldNode = firstDom(oldVnode);
+  const lastOldNode = lastDom(oldVnode);
   const host = firstOldNode?.parentNode ?? parent;
-  const anchor = firstOldNode ?? null;
+  const anchor = lastOldNode?.nextSibling ?? endAnchor;
+  removeFromDom(oldVnode);
   const newDom = createDom(newVnode, owner);
   if (newDom) host.insertBefore(newDom, anchor);
-  removeFromDom(oldVnode);
   return newVnode;
 }
 
@@ -319,41 +354,41 @@ function patchElement(oldVnode, newVnode, owner) {
   const oldChildren = oldVnode._children ?? [];
   const newChildren = normalizeChildren(newVnode.children);
   newVnode._children = newChildren;
-  patchChildren(el, oldChildren, newChildren, owner);
+  // Element's children exclusively live inside the element — no end anchor
+  // needed; appends land at the end of the element naturally.
+  patchChildren(el, oldChildren, newChildren, owner, /* endAnchor */ null);
 }
 
 function patchComponent(oldVnode, newVnode, owner) {
   const instance = oldVnode._instance;
   newVnode._instance = instance;
+  // Markers carry over to the new vnode — same DOM position, same identity.
+  newVnode._startMarker = oldVnode._startMarker;
+  newVnode._endMarker = oldVnode._endMarker;
   instance.props = newVnode.props || {};
   instance._childrenArg = newVnode.children;
   instance.onPropsChanged?.();
 
   const newSubtree = wrapTopLevel(instance.render?.());
   const oldSubtree = instance._vtree;
-  const host = firstDom(oldSubtree)?.parentNode ?? null;
-  if (host) {
-    patchSubtree(host, oldSubtree, newSubtree, instance);
+  // Parent is always available via the markers, even if the previous render
+  // returned null (no firstDom to look up). Markers sit in the parent DOM
+  // from first mount onwards — this is what fixes the null-host skip.
+  const parent = newVnode._startMarker.parentNode;
+  if (parent) {
+    const oldList = asList(oldSubtree);
+    const newList = asList(newSubtree);
+    patchChildren(parent, oldList, newList, instance, newVnode._endMarker);
   }
   instance._vtree = newSubtree;
 }
 
-// Patches a component's own rendered output. Accepts single-vnode OR array
-// (fragment) roots. Uses the same keyed/positional engine as element
-// children — a fragment is conceptually just children with no wrapping
-// element.
-function patchSubtree(host, oldSubtree, newSubtree, owner) {
-  const oldList = asList(oldSubtree);
-  const newList = asList(newSubtree);
-  patchChildren(host, oldList, newList, owner);
-}
-
-function patchChildren(parent, oldChildren, newChildren, owner) {
+function patchChildren(parent, oldChildren, newChildren, owner, endAnchor) {
   const useKeys = hasAnyKey(oldChildren) || hasAnyKey(newChildren);
   if (useKeys) {
-    patchKeyed(parent, oldChildren, newChildren, owner);
+    patchKeyed(parent, oldChildren, newChildren, owner, endAnchor);
   } else {
-    patchPositional(parent, oldChildren, newChildren, owner);
+    patchPositional(parent, oldChildren, newChildren, owner, endAnchor);
   }
 }
 
@@ -364,25 +399,26 @@ function hasAnyKey(list) {
   return false;
 }
 
-function patchPositional(parent, oldChildren, newChildren, owner) {
+function patchPositional(parent, oldChildren, newChildren, owner, endAnchor) {
   const common = Math.min(oldChildren.length, newChildren.length);
   for (let i = 0; i < common; i++) {
-    patchNode(parent, oldChildren[i], newChildren[i], owner);
+    patchNode(parent, oldChildren[i], newChildren[i], owner, endAnchor);
   }
   for (let i = common; i < oldChildren.length; i++) {
     removeFromDom(oldChildren[i]);
   }
   for (let i = common; i < newChildren.length; i++) {
     const node = createDom(newChildren[i], owner);
-    if (node) parent.appendChild(node);
+    if (node) parent.insertBefore(node, endAnchor);
   }
 }
 
-// Keyed diff. Two passes: first build a key→old-index map, then walk the
-// new list. For each new child, try to find a matching old child by key —
-// on hit, patch in place and move the DOM if its position changed; on miss,
-// create fresh. Finally, any old children never claimed get removed.
-function patchKeyed(parent, oldChildren, newChildren, owner) {
+// Keyed diff — walks new children back-to-front so each placed child sets
+// the anchor the previous one must sit before. Avoids the positional-cursor
+// hazard (where mid-loop DOM mutations made `parent.childNodes[cursor]`
+// point at the wrong sibling) and handles multi-root vnodes uniformly via
+// `collectDomRoots` / range-move.
+function patchKeyed(parent, oldChildren, newChildren, owner, endAnchor) {
   const keyToOld = new Map();
   for (let i = 0; i < oldChildren.length; i++) {
     const k = oldChildren[i]?.key;
@@ -390,35 +426,26 @@ function patchKeyed(parent, oldChildren, newChildren, owner) {
   }
   const claimed = new Array(oldChildren.length).fill(false);
 
-  // anchor tracks where the next DOM node should sit. We use `parent.childNodes`
-  // dynamically so reorders inside this pass pick up the latest state.
-  let cursor = 0;
-  for (let i = 0; i < newChildren.length; i++) {
+  let anchor = endAnchor;
+  for (let i = newChildren.length - 1; i >= 0; i--) {
     const newChild = newChildren[i];
     const newKey = newChild?.key;
     const oldIdx = newKey != null ? keyToOld.get(newKey) : undefined;
 
     if (oldIdx != null && !claimed[oldIdx]) {
       claimed[oldIdx] = true;
-      const oldChild = oldChildren[oldIdx];
-      patchNode(parent, oldChild, newChild, owner);
-
-      // Move into position if the matched node isn't already there. We use
-      // the resulting DOM node of the patched vnode (not the old one, which
-      // may have been torn down on a type mismatch).
-      const dom = firstDom(newChild);
-      const ref = parent.childNodes[cursor] ?? null;
-      if (dom && dom !== ref) {
-        parent.insertBefore(dom, ref);
-      }
+      patchNode(parent, oldChildren[oldIdx], newChild, owner, anchor);
     } else {
       const node = createDom(newChild, owner);
-      if (node) {
-        const ref = parent.childNodes[cursor] ?? null;
-        parent.insertBefore(node, ref);
-      }
+      if (node) parent.insertBefore(node, anchor);
     }
-    cursor += countDomRoots(newChild);
+
+    // Ensure the child's full DOM range sits immediately before the anchor.
+    // For a same-Ctor component with a fragment body the range is bracketed
+    // by its markers and moves as a unit; for markup every _markupNode moves;
+    // for element/text the single node moves.
+    moveRangeBefore(parent, newChild, anchor);
+    anchor = firstDom(newChild) ?? anchor;
   }
 
   for (let i = 0; i < oldChildren.length; i++) {
@@ -426,29 +453,49 @@ function patchKeyed(parent, oldChildren, newChildren, owner) {
   }
 }
 
-// How many top-level DOM nodes this vnode contributes. Markup can return
-// several, components may return a fragment — the keyed cursor needs the
-// right number to stay aligned.
-function countDomRoots(vnode) {
-  if (isVoid(vnode)) return 0;
-  if (typeof vnode !== 'object') return 1;
-  if (vnode._kind === 'text') return 1;
-  if (vnode.type === '__markup__') return vnode._markupNodes?.length ?? 0;
-  if (typeof vnode.type === 'function') {
-    const sub = vnode._instance?._vtree;
-    return countSubRoots(sub);
+// Move every DOM node belonging to `vnode` so they sit consecutively right
+// before `anchor`, preserving their relative order.
+function moveRangeBefore(parent, vnode, anchor) {
+  if (isVoid(vnode)) return;
+  const nodes = collectDomRoots(vnode);
+  for (const node of nodes) {
+    if (node && node !== anchor) parent.insertBefore(node, anchor);
   }
-  return 1;
 }
 
-function countSubRoots(sub) {
-  if (isVoid(sub)) return 0;
-  if (Array.isArray(sub)) {
-    let n = 0;
-    for (const s of sub) n += countDomRoots(s);
-    return n;
+// All top-level DOM nodes this vnode occupies, in order. For components we
+// walk from startMarker through endMarker inclusive so a single move-op
+// transports everything — including nested markup, multi-root fragments,
+// and the markers themselves.
+function collectDomRoots(vnode) {
+  if (isVoid(vnode)) return [];
+  if (Array.isArray(vnode)) {
+    const out = [];
+    for (const c of vnode) {
+      const sub = collectDomRoots(c);
+      for (const n of sub) out.push(n);
+    }
+    return out;
   }
-  return countDomRoots(sub);
+  if (typeof vnode !== 'object') return [];
+  if (vnode._kind === 'text') return vnode._dom ? [vnode._dom] : [];
+  if (vnode.type === '__markup__') {
+    return vnode._markupNodes ? [...vnode._markupNodes] : [];
+  }
+  if (typeof vnode.type === 'function') {
+    const start = vnode._startMarker;
+    const end = vnode._endMarker;
+    if (!start || !end) return [];
+    const out = [];
+    let cur = start;
+    while (cur) {
+      out.push(cur);
+      if (cur === end) break;
+      cur = cur.nextSibling;
+    }
+    return out;
+  }
+  return vnode._dom ? [vnode._dom] : [];
 }
 
 // --- unmount ---
@@ -476,19 +523,31 @@ function removeFromDom(vnode) {
   }
 
   if (typeof vnode.type === 'function') {
+    // Fire onDestroy on any nested components first (so deeper cleanup can
+    // still reach the DOM), then detach the whole range at once.
+    destroyTree(vnode._instance?._vtree);
     const instance = vnode._instance;
     if (instance) {
-      // Remove the component's own subtree (detaches DOM) so nested
-      // components see their DOM pulled. Then fire onDestroy on this
-      // instance itself.
-      removeFromDom(instance._vtree);
       try { instance.onDestroy?.(); }
       catch (err) { reportRuntimeError(err, { phase: 'onDestroy', component: vnode.type?.name }); }
+    }
+    // Remove everything from startMarker to endMarker inclusive.
+    const start = vnode._startMarker;
+    const end = vnode._endMarker;
+    const parent = start?.parentNode;
+    if (parent && end) {
+      let cur = start;
+      while (cur) {
+        const next = cur.nextSibling;
+        parent.removeChild(cur);
+        if (cur === end) break;
+        cur = next;
+      }
     }
     return;
   }
 
-  // Element — walk children so any nested components see onDestroy without
+  // Element — walk children so nested components see onDestroy without
   // double-detaching their DOM (the element's removeChild below pulls the
   // whole subtree in one go).
   for (const child of vnode._children ?? []) destroyTree(child);
@@ -496,9 +555,8 @@ function removeFromDom(vnode) {
 }
 
 // Walk a subtree without detaching DOM, calling onDestroy on every component
-// we find. Used for the inside of a component about to be removed — its own
-// root will be cleared by the caller (removeFromDom on the component vnode
-// or by detachment of an ancestor element).
+// we find. Used for cleanup ahead of an ancestor tear-down that will remove
+// the DOM in a single pass.
 function destroyTree(vnode) {
   if (isVoid(vnode)) return;
   if (Array.isArray(vnode)) { for (const c of vnode) destroyTree(c); return; }
@@ -518,7 +576,9 @@ function destroyTree(vnode) {
 }
 
 // First real DOM node this vnode owns, used to compute the insertion anchor
-// on replace/reorder.
+// on replace/reorder. For a component we return the start marker so callers
+// that index into `parent.childNodes` always hit a live node, even when the
+// component's own render returned null.
 function firstDom(vnode) {
   if (isVoid(vnode)) return null;
   if (Array.isArray(vnode)) {
@@ -531,6 +591,27 @@ function firstDom(vnode) {
   if (typeof vnode !== 'object') return null;
   if (vnode._kind === 'text') return vnode._dom;
   if (vnode.type === '__markup__') return vnode._markupNodes?.[0] ?? null;
-  if (typeof vnode.type === 'function') return firstDom(vnode._instance?._vtree);
+  if (typeof vnode.type === 'function') return vnode._startMarker ?? null;
+  return vnode._dom;
+}
+
+// Last real DOM node this vnode owns, used to compute where the next
+// sibling would sit — paired with firstDom for range-aware replacements.
+function lastDom(vnode) {
+  if (isVoid(vnode)) return null;
+  if (Array.isArray(vnode)) {
+    for (let i = vnode.length - 1; i >= 0; i--) {
+      const d = lastDom(vnode[i]);
+      if (d) return d;
+    }
+    return null;
+  }
+  if (typeof vnode !== 'object') return null;
+  if (vnode._kind === 'text') return vnode._dom;
+  if (vnode.type === '__markup__') {
+    const nodes = vnode._markupNodes;
+    return nodes && nodes.length > 0 ? nodes[nodes.length - 1] : null;
+  }
+  if (typeof vnode.type === 'function') return vnode._endMarker ?? null;
   return vnode._dom;
 }

@@ -141,6 +141,139 @@ describe('Keyed list diff', () => {
   });
 });
 
+describe('Component comment markers carry the class name', () => {
+  it('start and end markers label themselves with the Component class name', () => {
+    class MyWidget extends Component {
+      render() { return h('span', null, 'x'); }
+    }
+    const c = document.createElement('div');
+    mount(MyWidget, c);
+
+    // Root component has no markers (the container is the boundary); drop a
+    // nested component so we can see its markers.
+    class Wrapper extends Component {
+      render() { return h('div', null, h(MyWidget, {})); }
+    }
+    const c2 = document.createElement('div');
+    mount(Wrapper, c2);
+
+    const walker = document.createTreeWalker(c2, NodeFilter.SHOW_COMMENT);
+    const comments = [];
+    let n;
+    while ((n = walker.nextNode())) comments.push(n.data);
+
+    expect(comments).toContain(' rs:MyWidget ');
+    expect(comments).toContain(' /rs:MyWidget ');
+  });
+});
+
+describe('Component null → content transitions', () => {
+  it('component whose render toggles null → content correctly mounts DOM on the next render', async () => {
+    // Regression for vdom.js patchComponent null-host skip: before the
+    // comment-marker range semantics, host lookup via `firstDom(oldSubtree)`
+    // returned null when the previous render was null, and the new subtree
+    // was silently dropped — the component's DOM never appeared.
+    class Leaf extends Component {
+      onInit() { this.show = this.props.show; }
+      onPropsChanged() { this.show = this.props.show; }
+      render() { return this.show ? h('span', null, this.props.label) : null; }
+    }
+    class Parent extends Component {
+      constructor() { super(); this.show = false; }
+      toggle() { this.show = !this.show; this.stateHasChanged(); }
+      render() {
+        return h('section', null, h(Leaf, { show: this.show, label: 'ready' }));
+      }
+    }
+    const c = document.createElement('div');
+    const parent = mount(Parent, c);
+    expect(c.querySelector('span')).toBeNull();
+
+    parent.toggle();
+    await nextFrame();
+    const span = c.querySelector('span');
+    expect(span).not.toBeNull();
+    expect(span.textContent).toBe('ready');
+
+    parent.toggle();
+    await nextFrame();
+    expect(c.querySelector('span')).toBeNull();
+  });
+
+  it('component siblings around a null-rendering component keep their order', async () => {
+    // The comment markers must reserve the component's slot even when the
+    // subtree is empty; otherwise adjacent siblings would collapse onto
+    // each other and re-rendering the empty one into content would insert
+    // in the wrong place.
+    class MaybeEmpty extends Component {
+      render() { return this.props.show ? h('em', null, 'middle') : null; }
+    }
+    class Parent extends Component {
+      constructor() { super(); this.show = false; }
+      toggle() { this.show = !this.show; this.stateHasChanged(); }
+      render() {
+        return h('div', null,
+          h('span', null, 'before'),
+          h(MaybeEmpty, { show: this.show }),
+          h('span', null, 'after')
+        );
+      }
+    }
+    const c = document.createElement('div');
+    const parent = mount(Parent, c);
+    const spansBefore = Array.from(c.querySelectorAll('span')).map(s => s.textContent);
+    expect(spansBefore).toEqual(['before', 'after']);
+
+    parent.toggle();
+    await nextFrame();
+    expect(c.querySelector('em')?.textContent).toBe('middle');
+    // Order check: before → em → after
+    const order = Array.from(c.firstChild.children).map(e => e.tagName + ':' + e.textContent);
+    expect(order).toEqual(['SPAN:before', 'EM:middle', 'SPAN:after']);
+
+    parent.toggle();
+    await nextFrame();
+    expect(c.querySelector('em')).toBeNull();
+    expect(Array.from(c.querySelectorAll('span')).map(s => s.textContent)).toEqual(['before', 'after']);
+  });
+});
+
+describe('Keyed reorder with multi-root component fragments', () => {
+  it('reordering a component that renders a fragment moves all its DOM together', async () => {
+    // Regression for vdom.js patchKeyed: before the comment-marker range
+    // semantics, only firstDom was moved on reorder — subsequent nodes in
+    // a fragment-return stayed behind, shredding the DOM order.
+    class Pair extends Component {
+      render() {
+        return [
+          h('span', { class: 'a' }, this.props.id, '-a'),
+          h('span', { class: 'b' }, this.props.id, '-b'),
+        ];
+      }
+    }
+    class List extends Component {
+      constructor() { super(); this.ids = ['x', 'y']; }
+      swap() { this.ids = [...this.ids].reverse(); this.stateHasChanged(); }
+      render() {
+        return h('div', null, ...this.ids.map(id => h(Pair, { key: id, id })));
+      }
+    }
+    const c = document.createElement('div');
+    const list = mount(List, c);
+
+    // Before: x-a, x-b, y-a, y-b
+    const before = Array.from(c.querySelectorAll('span')).map(s => s.textContent);
+    expect(before).toEqual(['x-a', 'x-b', 'y-a', 'y-b']);
+
+    list.swap();
+    await nextFrame();
+
+    // After swap: y-a, y-b, x-a, x-b — both of each pair stay adjacent.
+    const after = Array.from(c.querySelectorAll('span')).map(s => s.textContent);
+    expect(after).toEqual(['y-a', 'y-b', 'x-a', 'x-b']);
+  });
+});
+
 describe('Component lifecycle on unmount', () => {
   it('fires onDestroy when a component leaves the tree', async () => {
     const destroySpy = vi.fn();

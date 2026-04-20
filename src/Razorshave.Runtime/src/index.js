@@ -20,5 +20,6 @@ export { Store } from './store.js';
 export { LocalStorage, SessionStorage, CookieStore } from './browser-storage.js';
 export { ApiClient, ApiException } from './api-client.js';
 export { reportRuntimeError, setErrorHandler } from './errors.js';
+export * from './bcl.js';
 
 export const VERSION = '0.0.1';

@@ -198,8 +198,14 @@ internal static class BuildCommand
         psi.ArgumentList.Add("--nologo");
 
         var proc = Process.Start(psi)!;
-        var stdout = proc.StandardOutput.ReadToEnd();
-        var stderr = proc.StandardError.ReadToEnd();
+        // Read stdout and stderr concurrently — sequentially draining one
+        // then the other can deadlock when the child writes enough to the
+        // un-drained pipe to fill its buffer.
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        Task.WaitAll(stdoutTask, stderrTask);
+        var stdout = stdoutTask.Result;
+        var stderr = stderrTask.Result;
         proc.WaitForExit();
         if (proc.ExitCode != 0)
         {
@@ -279,8 +285,16 @@ internal static class BuildCommand
         var refs = new List<MetadataReference>();
         foreach (var dll in Directory.GetFiles(binDir, "*.dll", SearchOption.TopDirectoryOnly))
         {
-            try { refs.Add(MetadataReference.CreateFromFile(dll)); }
-            catch { /* unreadable dll — skip */ }
+            try
+            {
+                refs.Add(MetadataReference.CreateFromFile(dll));
+            }
+            catch (Exception ex)
+            {
+                // Same rationale as MetadataReferenceLoader.TryAdd: silently
+                // dropped references cause silently wrong JS output. Log it.
+                Console.Error.WriteLine($"razorshave: skipping unreadable project reference {dll}: {ex.Message}");
+            }
         }
         return refs;
     }
@@ -516,6 +530,11 @@ internal static class BuildCommand
         psi.ArgumentList.Add("--bundle");
         psi.ArgumentList.Add("--format=esm");
         psi.ArgumentList.Add("--minify");
+        // Preserve original class/function names so `Ctor.name` still reads
+        // meaningfully at runtime — needed for the devtools-friendly
+        // component markers (`<!-- rs:MyWidget -->`) and for reportable
+        // error context (owner.constructor.name in trampoline).
+        psi.ArgumentList.Add("--keep-names");
         psi.ArgumentList.Add("--tree-shaking=true");
         psi.ArgumentList.Add($"--outdir={distDir}");
         psi.ArgumentList.Add("--entry-names=[name].[hash]");
@@ -523,8 +542,12 @@ internal static class BuildCommand
         psi.ArgumentList.Add($"--metafile={metaFile}");
 
         var proc = Process.Start(psi)!;
-        var stdout = proc.StandardOutput.ReadToEnd();
-        var stderr = proc.StandardError.ReadToEnd();
+        // Concurrent reads — see RunDotnetBuild for the deadlock rationale.
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        Task.WaitAll(stdoutTask, stderrTask);
+        var stdout = stdoutTask.Result;
+        var stderr = stderrTask.Result;
         proc.WaitForExit();
         if (proc.ExitCode != 0)
         {

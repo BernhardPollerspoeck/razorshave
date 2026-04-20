@@ -42,8 +42,20 @@ internal static class MetadataReferenceLoader
         void TryAdd(string dll)
         {
             if (!seen.Add(dll)) return;
-            try { refs.Add(MetadataReference.CreateFromFile(dll)); }
-            catch { /* unreadable dll */ }
+            try
+            {
+                refs.Add(MetadataReference.CreateFromFile(dll));
+            }
+            catch (Exception ex)
+            {
+                // A malformed or locked DLL would silently drop out of the
+                // reference list before — any user type it carries would then
+                // be unresolved in SemanticModel, and the transpiler would
+                // quietly emit wrong JS (event subscriptions not rewritten,
+                // `[JsonPropertyName]` attributes not honoured, etc.). Log so
+                // the degradation is visible.
+                Console.Error.WriteLine($"razorshave: skipping unreadable reference {dll}: {ex.Message}");
+            }
         }
 
         // Microsoft.NETCore.App — strip the trailing separator so directory-math

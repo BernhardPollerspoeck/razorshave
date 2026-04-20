@@ -35,7 +35,10 @@ class NavigationManager {
   }
 
   _emit(path) {
-    for (const listener of this._listeners) {
+    // Snapshot before iteration — a listener that unsubscribes itself (or
+    // subscribes another) during dispatch would otherwise corrupt the live
+    // Set. Matches the defensive pattern in Store._emitChange.
+    for (const listener of Array.from(this._listeners)) {
       listener(path);
     }
   }

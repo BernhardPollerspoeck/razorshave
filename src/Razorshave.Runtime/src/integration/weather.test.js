@@ -15,10 +15,12 @@ import { mount, container } from '../index.js';
 import { Weather } from '../../../../tests/Razorshave.Transpiler.Tests/Fixtures/weather/Output.verified.js';
 
 // Five JS objects matching the shape the transpiled Weather accesses:
-// forecast.date.toShortDateString(), forecast.temperatureC, .temperatureF, .summary.
+// forecast.date.toLocaleDateString(), forecast.temperatureC, .temperatureF, .summary.
+// (The transpiler maps C#'s `DateOnly.ToShortDateString()` to JS's
+// `toLocaleDateString()` via StaticMemberRewrites.)
 function makeForecast(dateText, c, f, summary) {
   return {
-    date: { toShortDateString: () => dateText },
+    date: { toLocaleDateString: () => dateText },
     temperatureC: c,
     temperatureF: f,
     summary,
