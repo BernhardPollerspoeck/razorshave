@@ -72,6 +72,49 @@ public static class Transpiler
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Same as <see cref="TranspileClientClass(string, IReadOnlyList{MetadataReference}?, string?)"/>
+    /// but accepts an already-parsed <see cref="SyntaxTree"/> so callers that
+    /// have already scanned the file for classification don't pay the parse
+    /// cost twice. Pairs with <see cref="BuildCompilationFromTree"/>.
+    /// </summary>
+    public static string TranspileClientClass(SyntaxTree tree, IReadOnlyList<MetadataReference>? references = null, string? globalUsings = null)
+    {
+        ArgumentNullException.ThrowIfNull(tree);
+
+        var model = BuildCompilationFromTree(tree, references, globalUsings);
+
+        var cls = tree.GetRoot()
+            .DescendantNodes()
+            .OfType<ClassDeclarationSyntax>()
+            .FirstOrDefault(ComponentClassifier.IsClientClass);
+
+        if (cls is null) return string.Empty;
+
+        var sb = new StringBuilder();
+        HeaderEmitter.Emit(sb, cls);
+        ClassEmitter.EmitPlain(cls, model, sb);
+        return sb.ToString();
+    }
+
+    private static SemanticModel BuildCompilationFromTree(SyntaxTree tree, IReadOnlyList<MetadataReference>? references, string? globalUsings)
+    {
+        var trees = new List<SyntaxTree> { tree };
+        if (!string.IsNullOrEmpty(globalUsings))
+        {
+            trees.Add(CSharpSyntaxTree.ParseText(globalUsings));
+        }
+        var refs = references is { Count: > 0 }
+            ? references
+            : MetadataReferenceLoader.SharedFramework();
+        var compilation = CSharpCompilation.Create(
+            assemblyName: "Razorshave.Transpile",
+            syntaxTrees: trees,
+            references: refs,
+            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        return compilation.GetSemanticModel(tree);
+    }
+
     // Shared compilation-building path for both entry points. When the caller
     // passes an explicit `references` list it's used as-is (typical for
     // BuildCommand which pre-builds the list once per build). When omitted

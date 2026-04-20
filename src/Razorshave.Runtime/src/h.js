@@ -33,12 +33,20 @@ export function markup(html) {
   return { type: '__markup__', html };
 }
 
+// Iterative flattener — a stack-of-arrays walk rather than recursion so
+// pathologically deep nested arrays can't blow the call stack. User code
+// rarely produces such trees, but Razor codegen around RenderFragments
+// can layer several levels and we'd rather not depend on "rare".
 function flattenChildren(children) {
   const out = [];
-  for (const c of children) {
+  const stack = [{ arr: children, i: 0 }];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    if (frame.i >= frame.arr.length) { stack.pop(); continue; }
+    const c = frame.arr[frame.i++];
     if (c === null || c === undefined || c === false || c === true) continue;
     if (Array.isArray(c)) {
-      for (const sub of flattenChildren(c)) out.push(sub);
+      stack.push({ arr: c, i: 0 });
     } else {
       out.push(c);
     }

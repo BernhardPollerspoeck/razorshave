@@ -75,11 +75,25 @@ export class Router extends Component {
       }
     }
 
-    const NotFound = this.props?.notFound;
-    if (NotFound) {
-      return wrapInLayout(h(NotFound, { path }), layout);
-    }
-    return h('p', {}, 'Route not found: ' + path);
+    const NotFound = this.props?.notFound ?? DefaultNotFound;
+    return wrapInLayout(h(NotFound, { path }), layout);
+  }
+}
+
+// Default fallback for routes that don't match and don't have a user-
+// supplied notFound component configured. Kept minimal and exported so
+// apps can import it, wrap it, or just rely on the fallback.
+//
+// User-supplied `notFound` receives `{ path }` as props — same shape here
+// so swapping between default and custom is a one-line change.
+export class DefaultNotFound extends Component {
+  render() {
+    return h('div', { class: 'rs-not-found', role: 'alert' },
+      h('h2', null, 'Page not found'),
+      h('p', null, 'No route matched ',
+        h('code', null, this.props?.path ?? '')
+      )
+    );
   }
 }
 

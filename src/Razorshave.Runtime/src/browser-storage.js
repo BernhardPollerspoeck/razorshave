@@ -70,9 +70,16 @@ export class SessionStorage extends WebStorageBase {
 // Cookies are a single delimited string on document.cookie — this class hides
 // the parsing/escaping dance and exposes a Map-like surface. `remove` is a
 // set with max-age=0, matching the canonical "expire the cookie" idiom.
+//
+// The parsed view is cached against the raw `document.cookie` string so
+// repeated `get`/`has`/`getAll` calls in a render loop don't re-parse the
+// same string each time. Invalidation is automatic: if `document.cookie`
+// changed since the cache was written, the next read re-parses.
 export class CookieStore {
   constructor(doc = typeof document !== 'undefined' ? document : null) {
     this._doc = doc;
+    this._cachedRaw = null;
+    this._cachedParsed = null;
   }
 
   get(name) {
@@ -112,9 +119,16 @@ export class CookieStore {
   }
 
   _parse() {
+    const raw = this._doc?.cookie ?? '';
+    if (this._cachedRaw === raw && this._cachedParsed !== null) {
+      return this._cachedParsed;
+    }
     const out = {};
-    const raw = this._doc?.cookie;
-    if (!raw) return out;
+    if (!raw) {
+      this._cachedRaw = raw;
+      this._cachedParsed = out;
+      return out;
+    }
     for (const pair of raw.split(';')) {
       const trimmed = pair.trim();
       if (!trimmed) continue;
@@ -129,6 +143,8 @@ export class CookieStore {
         out[k] = v;
       }
     }
+    this._cachedRaw = raw;
+    this._cachedParsed = out;
     return out;
   }
 }

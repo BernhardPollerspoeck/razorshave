@@ -29,10 +29,36 @@ namespace Razorshave.Cli.Transpiler;
 /// </remarks>
 public static class MetadataReferenceLoader
 {
+    // Cached references + the runtime-directory they were loaded from. If
+    // the runtime-directory changes between calls (long-lived MSBuild
+    // worker that rebuilt against a new SDK, tests swapping runtime path)
+    // we discard the cache and reload — otherwise SemanticModel would
+    // silently resolve user types against stale framework assemblies.
     private static IReadOnlyList<MetadataReference>? _cachedSharedFramework;
+    private static string? _cachedForRuntimeDir;
 
     public static IReadOnlyList<MetadataReference> SharedFramework()
-        => _cachedSharedFramework ??= LoadSharedFramework();
+    {
+        var runtimeDir = Path.TrimEndingDirectorySeparator(RuntimeEnvironment.GetRuntimeDirectory());
+        if (_cachedSharedFramework is not null && _cachedForRuntimeDir == runtimeDir)
+        {
+            return _cachedSharedFramework;
+        }
+        _cachedForRuntimeDir = runtimeDir;
+        _cachedSharedFramework = LoadSharedFramework();
+        return _cachedSharedFramework;
+    }
+
+    /// <summary>
+    /// Clears the cached reference list. Intended for tests that need to
+    /// exercise the load path in isolation, or for long-lived processes
+    /// that want to pick up an SDK swap without restarting.
+    /// </summary>
+    public static void Reset()
+    {
+        _cachedSharedFramework = null;
+        _cachedForRuntimeDir = null;
+    }
 
     private static List<MetadataReference> LoadSharedFramework()
     {

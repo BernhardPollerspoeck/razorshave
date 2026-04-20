@@ -46,18 +46,23 @@ export class ApiClient {
       body: fetchBody,
     });
 
-    const bodyText = await fetchResponse.text();
+    const rawBody = await fetchResponse.text();
     const response = {
       statusCode: fetchResponse.status,
       headers: Object.fromEntries(fetchResponse.headers.entries?.() ?? []),
-      body: bodyText,
+      body: rawBody,
     };
     await this.handleResponse(response);
 
     if (!fetchResponse.ok) {
       throw new ApiException(response);
     }
-    return bodyText ? JSON.parse(bodyText) : null;
+    // Use `response.body` (not the original `rawBody`) so a `handleResponse`
+    // hook that unwrapped an envelope, substituted error text with a
+    // parseable default, or ran the bytes through a decompressor is
+    // honoured. Matches the dev-host `ApiClient`, which also lets the
+    // hook rewrite the body before deserialisation.
+    return response.body ? JSON.parse(response.body) : null;
   }
 }
 

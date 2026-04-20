@@ -1,6 +1,7 @@
 import { Component } from '../component.js';
 import { h } from '../h.js';
 import { navigationManager } from '../navigation-manager.js';
+import { reportRuntimeError } from '../errors.js';
 
 // <NavLink Href="/counter" class="nav-link">Counter</NavLink> in Razor maps to
 // this component. Renders as an anchor that traps left-clicks and routes via
@@ -12,7 +13,16 @@ export class NavLink extends Component {
   render() {
     const rawHref = this.props.Href ?? this.props.href ?? '';
     const userClass = this.props.class ?? this.props.Class ?? '';
-    const childContent = this.props.ChildContent?.() ?? [];
+    // Guard the RenderFragment invocation: a throwing ChildContent would
+    // otherwise crash the entire render pipeline. Log + fall back to empty
+    // children so the link still renders (clickable, unstyled).
+    let childContent;
+    try {
+      childContent = this.props.ChildContent?.() ?? [];
+    } catch (err) {
+      reportRuntimeError(err, { phase: 'RenderFragment', component: 'NavLink' });
+      childContent = [];
+    }
 
     const target = normalizePath(rawHref);
     const path = navigationManager.pathname;

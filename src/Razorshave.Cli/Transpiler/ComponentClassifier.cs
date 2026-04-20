@@ -40,30 +40,27 @@ internal static class ComponentClassifier
         };
 
     /// <summary>
-    /// Returns the first interface (I-prefixed base) the class implements,
-    /// stripped of namespace qualifiers. Used as the DI key when auto-
-    /// registering a <c>[Client]</c> class — matches the <c>@inject I&lt;Name&gt;</c>
-    /// conventions on the Razor side.
+    /// Returns the interfaces (I-prefixed bases) the class implements,
+    /// stripped of namespace qualifiers and generic parameters. Used as the
+    /// DI key when auto-registering a <c>[Client]</c> class — matches the
+    /// <c>@inject I&lt;Name&gt;</c> conventions on the Razor side.
     /// </summary>
+    /// <remarks>
+    /// Heuristic: a name starting with <c>I</c> followed by an uppercase
+    /// letter (`IWeatherApi`, `IStore`, `ILogger`) is treated as an
+    /// interface; everything else (`ApiClient`, `ComponentBase`) is treated
+    /// as a class. This works for 99%+ of .NET code but can misidentify a
+    /// user class named e.g. <c>IPAddress</c>. Upgrading to SemanticModel
+    /// would cost a compilation at this call site and is only worth it
+    /// when we hit a real misclassification in practice.
+    /// </remarks>
     public static IEnumerable<string> EnumerateInterfaces(ClassDeclarationSyntax node)
     {
         if (node.BaseList is null) yield break;
-        // Skip the first entry only when it's clearly a class (non-I-prefixed
-        // in canonical casing). Interfaces in .NET conventionally start with I,
-        // a heuristic we lean on here because the syntax tree doesn't carry
-        // symbol info at parse time.
-        var first = true;
         foreach (var baseType in node.BaseList.Types)
         {
             var name = NameConventions.StripGenerics(
                 NameConventions.StripQualifiers(baseType.Type.ToString()));
-
-            if (first && (name.Length == 0 || name[0] != 'I' || name.Length < 2 || !char.IsUpper(name[1])))
-            {
-                first = false;
-                continue; // base class, not an interface
-            }
-            first = false;
 
             if (name.Length >= 2 && name[0] == 'I' && char.IsUpper(name[1]))
             {

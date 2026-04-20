@@ -23,20 +23,30 @@ namespace Razorshave.Cli.Transpiler;
 /// </remarks>
 internal static class HeaderEmitter
 {
-    private const string RuntimeImports =
-        "h, markup, Component, LayoutComponent, " +
-        "EventArgs, MouseEventArgs, KeyboardEventArgs, ChangeEventArgs, FocusEventArgs, " +
-        "PageTitle, NavLink, Router, ApiClient, ApiException, " +
-        "_isNullOrWhiteSpace, _isNullOrEmpty";
+    // Single source of truth for everything `@razorshave/runtime` exports
+    // that user-code (or the transpiler) might reference. The component
+    // entries are filtered from user-component import lines (they're
+    // already available via the runtime import) and the full list joins
+    // into the generated import statement. Adding a new runtime export
+    // means editing ONE array and noting whether it's a component.
+    private static readonly string[] RuntimeNonComponents =
+    [
+        "h", "markup",
+        "Component", "LayoutComponent",
+        "EventArgs", "MouseEventArgs", "KeyboardEventArgs", "ChangeEventArgs", "FocusEventArgs",
+        "ApiClient", "ApiException",
+        "_isNullOrWhiteSpace", "_isNullOrEmpty",
+    ];
+    private static readonly string[] RuntimeComponents = ["PageTitle", "NavLink", "Router"];
+    private static readonly string RuntimeImports =
+        string.Join(", ", RuntimeNonComponents.Concat(RuntimeComponents));
 
     /// <summary>
     /// Components supplied by <c>@razorshave/runtime</c> — never import these
     /// from a sibling <c>./Name.js</c> file, they're already in the runtime import.
+    /// Derived from the single `RuntimeComponents` source above.
     /// </summary>
-    private static readonly HashSet<string> RuntimeComponentNames = new(StringComparer.Ordinal)
-    {
-        "PageTitle", "NavLink", "Router",
-    };
+    private static readonly HashSet<string> RuntimeComponentNames = new(RuntimeComponents, StringComparer.Ordinal);
 
     /// <summary>
     /// Blazor-server-only or Blazor-internal components that have no Razorshave

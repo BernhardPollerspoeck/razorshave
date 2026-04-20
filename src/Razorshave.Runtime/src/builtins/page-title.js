@@ -1,4 +1,5 @@
 import { Component } from '../component.js';
+import { reportRuntimeError } from '../errors.js';
 
 // <PageTitle>Some text</PageTitle> in Razor compiles to the component with
 // ChildContent as a RenderFragment. Our transpiler emits that as an arrow
@@ -14,7 +15,18 @@ export class PageTitle extends Component {
   render() { return null; }
 
   onAfterRender() {
-    const children = this.props?.ChildContent?.() ?? [];
+    let children;
+    try {
+      children = this.props?.ChildContent?.() ?? [];
+    } catch (err) {
+      // User-supplied RenderFragment threw. Without this guard the exception
+      // would propagate up through the component render pipeline and kill
+      // the whole root's rerender. Logged via reportRuntimeError so the
+      // handler hierarchy stays consistent with other runtime-surfaced
+      // errors; document.title stays on whatever value it held before.
+      reportRuntimeError(err, { phase: 'RenderFragment', component: 'PageTitle' });
+      return;
+    }
     const text = flatten(children).filter(c => typeof c === 'string').join('');
     if (text && typeof document !== 'undefined') {
       document.title = text;

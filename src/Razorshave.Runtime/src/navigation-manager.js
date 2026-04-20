@@ -1,12 +1,13 @@
 // Singleton wrapper around the browser's history/location API.
 //
-// `navigateTo(path)` pushes a history entry and notifies subscribers — the
-// built-in Router listens here so it can re-render on programmatic
-// navigation. The browser's native popstate event covers back/forward; the
-// Router listens there separately.
+// All navigation — `navigateTo(path)` (programmatic pushState) AND browser
+// back/forward (popstate) — flows through `_emit`, so subscribers get ONE
+// callback shape for BOTH sources. The window's popstate listener lives
+// here (not in mount.js) so application-level concerns like guards, scroll
+// restoration, or navigation middleware can be added in a single place
+// without scattering window-event wiring.
 //
-// Guarded against SSR / non-browser environments with `typeof window` checks
-// so importing this module in Node (e.g., Vitest config files) doesn't blow up.
+// Guarded against SSR / non-browser environments with `typeof window` checks.
 // The check happens at EVERY access rather than at module-load — Vitest and
 // other test runners inject jsdom AFTER module initialisation, and a
 // module-load snapshot would otherwise stay `false` for the whole run and
@@ -19,6 +20,17 @@ function hasWindow() {
 class NavigationManager {
   constructor() {
     this._listeners = new Set();
+    this._popHandler = null;
+    this._attach();
+  }
+
+  // Register our single popstate handler with the browser so back/forward
+  // fires `_emit` exactly like `navigateTo`. Separate method (not inline
+  // in the constructor) so tests can re-initialise after mocking `window`.
+  _attach() {
+    if (!hasWindow() || this._popHandler) return;
+    this._popHandler = () => this._emit(window.location.pathname);
+    window.addEventListener('popstate', this._popHandler);
   }
 
   get uri() {
@@ -39,6 +51,9 @@ class NavigationManager {
   // as `Store.onChange`: subscribing during dispatch does NOT see the current
   // event, only subsequent ones; unsubscribing during dispatch is safe.
   onLocationChanged(handler) {
+    // Lazy attach covers the case where the module loaded before jsdom
+    // was installed — tests can now navigate reliably.
+    this._attach();
     this._listeners.add(handler);
     return () => this._listeners.delete(handler);
   }

@@ -1,17 +1,16 @@
 import { navigationManager } from './navigation-manager.js';
-import { setActiveRoot } from './component.js';
+import { pushActiveRoot, popActiveRoot } from './component.js';
+import { destroyTreeAndDom } from './vdom.js';
 
 // Application entry point: instantiate the root component, plug it into the
 // container element, run the Blazor-style lifecycle, wire navigation events
 // to the root's rerender so nested Routers update on URL change, return the
 // live instance.
 //
-// Also registers the instance as the module's active root so child
-// components can bubble stateHasChanged() back to it — the naive diff
-// re-renders the whole tree top-down and reuses child instances by class.
-//
-// The instance is handy for debugging and tests — production code usually
-// just mounts and forgets.
+// The returned instance has an `.unmount()` method that cleanly tears the
+// root down: unsubscribes from navigation, fires `onDestroy` on every
+// component in the subtree, clears the container, and removes the instance
+// from the active-root stack.
 
 export function mount(ComponentClass, container, props = {}) {
   if (!container) {
@@ -20,21 +19,36 @@ export function mount(ComponentClass, container, props = {}) {
   const instance = new ComponentClass();
   instance._container = container;
   instance.props = props;
-  setActiveRoot(instance);
+  pushActiveRoot(instance);
   // _lifecycleStart does: resolve [Inject]s → onInit → first render → kick
   // off onInitializedAsync (which triggers another render on completion).
   instance._lifecycleStart(ComponentClass);
 
-  // Route changes trigger a root rerender. The naive diff rebuilds the whole
-  // subtree, which is enough for nested Routers to re-evaluate their match
-  // without any per-component subscription plumbing.
+  // Route changes trigger a root rerender. Uses `NavigationManager` alone —
+  // `popstate` is wired there too, so one subscription covers programmatic
+  // navigation AND browser back/forward.
   instance._navUnsubscribe = navigationManager.onLocationChanged(() => {
     instance.stateHasChanged();
   });
-  if (typeof window !== 'undefined') {
-    instance._popHandler = () => instance.stateHasChanged();
-    window.addEventListener('popstate', instance._popHandler);
-  }
+
+  // Returned as a method for ergonomic `mount(App, el).unmount()` patterns.
+  // Safe to call multiple times — subsequent calls are no-ops.
+  let disposed = false;
+  instance.unmount = function unmount() {
+    if (disposed) return;
+    disposed = true;
+    instance._navUnsubscribe?.();
+    instance._navUnsubscribe = null;
+    // Fire onDestroy bottom-up for every component in the subtree, then
+    // detach the DOM in one pass.
+    destroyTreeAndDom(instance._vtree, container);
+    instance._vtree = null;
+    try { instance.onDestroy?.(); }
+    catch { /* user hook shouldn't block unmount cleanup */ }
+    // Remove self from the active-root stack so a later mount's
+    // stateHasChanged doesn't bubble to a disposed instance.
+    popActiveRoot(instance);
+  };
 
   return instance;
 }

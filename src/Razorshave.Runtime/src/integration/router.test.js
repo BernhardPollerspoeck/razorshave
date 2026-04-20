@@ -96,7 +96,9 @@ describe('Router end-to-end', () => {
     mount(App, root);
     navigationManager.navigateTo('/does-not-exist');
     await flushAsync();
-    expect(root.textContent).toMatch(/Route not found/);
+    // Default NotFound component renders "Page not found" + the unmatched path.
+    expect(root.textContent).toMatch(/Page not found/);
+    expect(root.textContent).toContain('/does-not-exist');
   });
 });
 

@@ -2,14 +2,39 @@ import { mountRoot, patchRoot } from './vdom.js';
 import { container } from './container.js';
 import { reportRuntimeError } from './errors.js';
 
-// Module-level reference to the mounted root component. Child components
-// can't rerender themselves (they have no _container of their own under the
-// naive diff), so stateHasChanged bubbles here and re-renders the whole tree
-// from the top. mount() sets this; see setActiveRoot.
-let _activeRoot = null;
+// Stack of currently-mounted root components. Child components can't
+// rerender themselves (they have no `_container` of their own), so their
+// `stateHasChanged` bubbles to the topmost active root and re-renders its
+// tree. We use a stack rather than a single slot so multiple `mount()` /
+// `unmount()` calls coexist cleanly — common in test suites and micro-
+// frontend setups. The topmost entry is the "last mounted" root.
+//
+// `pushActiveRoot` / `popActiveRoot` are the authoritative mutations;
+// `getActiveRoot()` is what stateHasChanged consults.
+const _activeRootStack = [];
 
+export function pushActiveRoot(instance) {
+  _activeRootStack.push(instance);
+}
+
+export function popActiveRoot(instance) {
+  const idx = _activeRootStack.lastIndexOf(instance);
+  if (idx >= 0) _activeRootStack.splice(idx, 1);
+}
+
+export function getActiveRoot() {
+  return _activeRootStack.length > 0
+    ? _activeRootStack[_activeRootStack.length - 1]
+    : null;
+}
+
+// Back-compat shim: old code called `setActiveRoot(instance)` as "make
+// this the currently active root". With the stack model that's equivalent
+// to pushing — but we avoid doubling up if the instance is already on top.
 export function setActiveRoot(instance) {
-  _activeRoot = instance;
+  if (instance === null) return;
+  if (getActiveRoot() === instance) return;
+  pushActiveRoot(instance);
 }
 
 // Base class for every transpiled Razor component.
@@ -51,12 +76,18 @@ export class Component {
   // bubbles to the active root — the naive diff rebuilds the subtree from
   // the top and reuses child instances by class so local state survives.
   stateHasChanged() {
-    if (this._renderScheduled) return;
-    this._renderScheduled = true;
+    // Dedupe at the TARGET that will actually rerender, not on `this`.
+    // Children bubble to `getActiveRoot()`, and ten child calls in the same
+    // frame should produce exactly one root rerender. If we set the flag
+    // on `this` (the child) first, a root-level call could still schedule
+    // a second rAF for the same frame — one from child, one from root,
+    // root rerenders twice.
+    const target = this._container ? this : getActiveRoot();
+    if (!target || target._renderScheduled) return;
+    target._renderScheduled = true;
     schedule(() => {
-      this._renderScheduled = false;
-      const target = this._container ? this : _activeRoot;
-      if (target && target.shouldRender()) target._rerender();
+      target._renderScheduled = false;
+      if (target.shouldRender()) target._rerender();
     });
   }
 
@@ -90,7 +121,14 @@ export class Component {
   // onInitializedAsync and schedule a rerender once it resolves so any state
   // set inside it lands on screen. Mirrors Blazor's behaviour where the first
   // paint doesn't wait for async initialisation.
+  //
+  // Idempotent guard: tests or subclasses that accidentally call
+  // `_lifecycleStart` a second time would otherwise see `onInit` fire again
+  // and kick off a duplicate async-init — this catches the mistake rather
+  // than silently running double.
   _lifecycleStart(Ctor) {
+    if (this._lifecycleStarted) return;
+    this._lifecycleStarted = true;
     this._resolveInjects(Ctor);
     this.onInit?.();
     this._rerender();

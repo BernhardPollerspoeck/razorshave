@@ -79,6 +79,13 @@ export class Container {
   // Reset state — exposed primarily for test isolation. Auto-factories are
   // re-seeded with the default IStore matcher so the container behaves like
   // a fresh export.
+  //
+  // Caveat: code that already resolved a service holds a live reference
+  // that WON'T pick up the new registration — clear() only affects the
+  // container's own cache, not downstream captures. Safe for test-between
+  // resets (nothing alive across `beforeEach` boundaries), dangerous to
+  // call mid-application (existing components continue to see the old
+  // instance while new resolves see the new one).
   clear() {
     this._factories.clear();
     this._singletons.clear();

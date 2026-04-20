@@ -267,16 +267,27 @@ async function trampoline(e) {
   const entry = e.currentTarget?._rsListeners?.[e.type];
   if (!entry) return;
   const { userFn, owner } = entry;
+  let threw = false;
   try {
     const result = userFn(e);
     if (result && typeof result.then === 'function') await result;
   } catch (err) {
+    threw = true;
     reportRuntimeError(err, {
       phase: 'event handler',
       component: owner?.constructor?.name,
     });
   } finally {
-    owner?.stateHasChanged?.();
+    // Event handlers that never touched state (pure side-effects, analytics,
+    // a `navigateTo` that itself triggers rerender via nav-listener) can
+    // opt out by setting `e.preventRazorshaveRerender = true` inside the
+    // handler. Default stays "assume mutation happened" to match Blazor
+    // semantics — explicit opt-out rather than opt-in keeps existing
+    // user code working. On throw we still rerender so an error-boundary
+    // (when we have one) can paint.
+    if (threw || !e.preventRazorshaveRerender) {
+      owner?.stateHasChanged?.();
+    }
   }
 }
 
@@ -599,9 +610,24 @@ function removeFromDom(vnode) {
   if (vnode._dom?.parentNode) vnode._dom.parentNode.removeChild(vnode._dom);
 }
 
+// Unmount a root tree: fire onDestroy on every component in the subtree
+// bottom-up, then detach everything from `container`. Exposed so mount.js
+// can hand control back to the caller via `instance.unmount()` without
+// reaching into vdom internals.
+export function destroyTreeAndDom(vtree, container) {
+  destroyTree(vtree);
+  if (container) container.replaceChildren();
+}
+
 // Walk a subtree without detaching DOM, calling onDestroy on every component
 // we find. Used for cleanup ahead of an ancestor tear-down that will remove
 // the DOM in a single pass.
+//
+// Ordering contract — observable to user-code: onDestroy fires BOTTOM-UP
+// (deepest child first, root last) and the component's DOM is STILL LIVE
+// when the hook runs. User cleanup that reads `this.props` or inspects
+// live DOM position works; user cleanup that tries to rerender won't see
+// anything because the parent's already scheduled its own teardown.
 function destroyTree(vnode) {
   if (isVoid(vnode)) return;
   if (Array.isArray(vnode)) { for (const c of vnode) destroyTree(c); return; }

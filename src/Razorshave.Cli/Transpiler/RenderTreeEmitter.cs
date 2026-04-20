@@ -365,18 +365,36 @@ internal static class RenderTreeEmitter
         if (inv.ArgumentList.Arguments.Count < 2) return false;
 
         var setterExpr = inv.ArgumentList.Arguments[1].Expression;
-        // Razor always emits a simple `__value => target = __value`. We extract
-        // the target so we can assign to it directly in a native handler —
-        // re-emitting the lambda body would route through identifier-rewriting
-        // which does exactly that.
-        if (setterExpr is SimpleLambdaExpressionSyntax { Body: AssignmentExpressionSyntax asn })
+
+        // Razor typically emits `__value => target = __value` (expression
+        // lambda). Some emission paths can produce `__value => { target =
+        // __value; }` (block lambda with a single expression-statement).
+        // Both are structurally the same setter; we extract the assignment
+        // target so we emit `(e) => target = e.target.value` directly
+        // rather than invoking an intermediate arrow function.
+        AssignmentExpressionSyntax? setterAssignment = setterExpr switch
         {
-            var target = EmitExpression(asn.Left, ctx);
+            SimpleLambdaExpressionSyntax { Body: AssignmentExpressionSyntax a } => a,
+            SimpleLambdaExpressionSyntax
+            {
+                Body: BlockSyntax { Statements: [ExpressionStatementSyntax { Expression: AssignmentExpressionSyntax a2 }] },
+            } => a2,
+            _ => null,
+        };
+
+        if (setterAssignment is not null)
+        {
+            var target = EmitExpression(setterAssignment.Left, ctx);
             js = $"(e) => {target} = e.target.value";
             return true;
         }
 
         // Fallback: emit the lambda as-is and invoke it with `e.target.value`.
+        // Razor produced a shape we didn't anticipate — surface it so a
+        // regression is visible instead of silent-wrong JS.
+        Console.Error.WriteLine(
+            $"razorshave: @bind callback had an unexpected lambda shape ({setterExpr.Kind()}); "
+            + "emitting generic invocation form. If this is wrong JS, file an issue.");
         var lambdaJs = EmitExpression(setterExpr, ctx);
         js = $"(e) => ({lambdaJs})(e.target.value)";
         return true;

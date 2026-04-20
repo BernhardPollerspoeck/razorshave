@@ -35,6 +35,19 @@ namespace Razorshave.Cli;
 /// </remarks>
 internal static class BuildCommand
 {
+    // Exit codes — documented so callers (MSBuild task, CI scripts) can
+    // switch on them meaningfully. Non-zero always means "don't ship this
+    // dist/".
+    private const int ExitOk = 0;
+    private const int ExitProjectDirMissing = 2;
+    private const int ExitCsprojMissing = 3;
+    private const int ExitGeneratedRoot = 4;
+    private const int ExitNoComponents = 5;
+    private const int ExitRuntimeSrcMissing = 6;
+    private const int ExitEsbuildBinaryMissing = 7;
+    private const int ExitEsbuildMetaMissing = 8;
+    private const int ExitTargetFrameworkMissing = 9;
+
     /// <summary>
     /// Entry point. <paramref name="skipDotnetBuild"/> is set by the MSBuild
     /// task path — MSBuild already built the project once, a nested build
@@ -47,14 +60,21 @@ internal static class BuildCommand
         if (!Directory.Exists(absProject))
         {
             Console.Error.WriteLine($"razorshave: project directory not found: {absProject}");
-            return 2;
+            return ExitProjectDirMissing;
         }
 
         var csproj = FindCsproj(absProject);
         if (csproj is null)
         {
             Console.Error.WriteLine($"razorshave: no .csproj found in {absProject}");
-            return 3;
+            return ExitCsprojMissing;
+        }
+
+        var tfm = ReadTargetFramework(csproj);
+        if (tfm is null)
+        {
+            Console.Error.WriteLine($"razorshave: could not read <TargetFramework> from {Path.GetFileName(csproj)}");
+            return ExitTargetFrameworkMissing;
         }
 
         if (!skipDotnetBuild)
@@ -68,14 +88,19 @@ internal static class BuildCommand
             Console.WriteLine($"[1/6] Skipping dotnet build (MSBuild-task context, -c {configuration})");
         }
 
-        var generatedRoot = FindGeneratedRazorRoot(absProject, configuration);
+        var generatedRoot = FindGeneratedRazorRoot(absProject, configuration, tfm);
         if (generatedRoot is null)
         {
             Console.Error.WriteLine($"razorshave: expected Razor-generated sources under obj/{configuration}/ — did EmitCompilerGeneratedFiles fail?");
-            return 4;
+            return ExitGeneratedRoot;
         }
 
-        var distDir = Path.Combine(absProject, "dist");
+        // Staging pattern — we write everything into `dist-staging/` first,
+        // then atomic-rename into `dist/` on success. A failed transpile no
+        // longer leaves the user with an empty dist directory and no
+        // deployable artefact from the previous successful build.
+        var finalDistDir = Path.Combine(absProject, "dist");
+        var distDir = Path.Combine(absProject, "dist-staging");
         if (Directory.Exists(distDir)) Directory.Delete(distDir, recursive: true);
         Directory.CreateDirectory(distDir);
 
@@ -84,16 +109,16 @@ internal static class BuildCommand
         // project's output DLLs. Every transpile call in this invocation
         // shares the same list, avoiding the per-Transpile concat hot loop
         // that previously ran for each component.
-        var references = BuildReferenceList(absProject, configuration);
+        var references = BuildReferenceList(absProject, configuration, tfm);
         // Pick up the project's GlobalUsings.g.cs so implicit-using types
         // (e.g. `HttpClient` from Web SDK's `System.Net.Http`) resolve in
         // SemanticModel just as they do in the real build.
-        var globalUsings = LoadGlobalUsings(absProject, configuration);
+        var globalUsings = LoadGlobalUsings(absProject, configuration, tfm);
         var (components, routesConfig) = TranspileAll(generatedRoot, distDir, references, globalUsings);
         if (components.Count == 0)
         {
             Console.Error.WriteLine("razorshave: no component classes found");
-            return 5;
+            return ExitNoComponents;
         }
 
         var clients = TranspileClientClasses(absProject, distDir, references, globalUsings);
@@ -103,7 +128,7 @@ internal static class BuildCommand
         if (runtimeSrc is null)
         {
             Console.Error.WriteLine("razorshave: runtime source directory not found");
-            return 6;
+            return ExitRuntimeSrcMissing;
         }
         var runtimeStaging = Path.Combine(distDir, "runtime");
         CopyDirectory(runtimeSrc, runtimeStaging);
@@ -116,13 +141,19 @@ internal static class BuildCommand
         if (esbuild is null)
         {
             Console.Error.WriteLine("razorshave: esbuild not found in Razorshave.Runtime/node_modules/.bin/ — run `npm install` in the runtime project.");
-            return 7;
+            return ExitEsbuildBinaryMissing;
         }
         var bundleResult = RunEsbuild(esbuild, distDir, runtimeStaging);
         if (bundleResult.Exit != 0) return bundleResult.Exit;
 
         Console.WriteLine("[6/6] Finalising dist/ (prune unbundled sources, copy wwwroot + scoped CSS) ...");
-        FinaliseDist(distDir, absProject, runtimeStaging, bundleResult.OutputFileName, configuration);
+        FinaliseDist(distDir, absProject, runtimeStaging, bundleResult.OutputFileName, configuration, tfm);
+
+        // Atomic promotion of staging → dist. If anything blew up above, the
+        // previous `dist/` is still intact and the build can be retried.
+        if (Directory.Exists(finalDistDir)) Directory.Delete(finalDistDir, recursive: true);
+        Directory.Move(distDir, finalDistDir);
+        distDir = finalDistDir;
 
         Console.WriteLine();
         var routedCount = components.Count(c => c.RoutePatterns.Count > 0);
@@ -141,7 +172,7 @@ internal static class BuildCommand
             Console.WriteLine($"    DefaultLayout: {routesConfig.DefaultLayout}");
         if (routesConfig.NotFound is not null)
             Console.WriteLine($"    NotFound: {routesConfig.NotFound}");
-        return 0;
+        return ExitOk;
     }
 
     // Walks every user .cs file in the project tree, looking for classes
@@ -161,13 +192,16 @@ internal static class BuildCommand
 
             if (!source.Contains("[Client]", StringComparison.Ordinal)) continue;
 
+            // Parse once, reuse for both classification and emission — the
+            // old path parsed the same file a second time inside
+            // TranspileClientClass, doubling the work per [Client] class.
             var tree = CSharpSyntaxTree.ParseText(source);
             var cls = tree.GetRoot().DescendantNodes()
                 .OfType<ClassDeclarationSyntax>()
                 .FirstOrDefault(Razorshave.Cli.Transpiler.ComponentClassifier.IsClientClass);
             if (cls is null) continue;
 
-            var js = Razorshave.Cli.Transpiler.Transpiler.TranspileClientClass(source, references, globalUsings);
+            var js = Razorshave.Cli.Transpiler.Transpiler.TranspileClientClass(tree, references, globalUsings);
             if (string.IsNullOrWhiteSpace(js)) continue;
 
             var name = cls.Identifier.Text;
@@ -286,10 +320,10 @@ internal static class BuildCommand
     // Transpile call and means SemanticModel-dependent detections (event
     // symbols, [JsonPropertyName], inherited-member rewrites) consistently
     // see the same reference set across the whole build.
-    private static List<MetadataReference> BuildReferenceList(string projectDir, string configuration)
+    private static List<MetadataReference> BuildReferenceList(string projectDir, string configuration, string tfm)
     {
         var refs = new List<MetadataReference>(MetadataReferenceLoader.SharedFramework());
-        refs.AddRange(LoadProjectBinReferences(projectDir, configuration));
+        refs.AddRange(LoadProjectBinReferences(projectDir, configuration, tfm));
         return refs;
     }
 
@@ -298,21 +332,43 @@ internal static class BuildCommand
     // declarations (`global using System.Net.Http;` for Web, for example).
     // Returns null when the file doesn't exist — projects without Web SDK
     // don't get the file and work fine without these globals.
-    private static string? LoadGlobalUsings(string projectDir, string configuration)
+    private static string? LoadGlobalUsings(string projectDir, string configuration, string tfm)
     {
-        var objDir = Path.Combine(projectDir, "obj", configuration, "net10.0");
+        var objDir = Path.Combine(projectDir, "obj", configuration, tfm);
         if (!Directory.Exists(objDir)) return null;
         var file = Directory.EnumerateFiles(objDir, "*.GlobalUsings.g.cs", SearchOption.TopDirectoryOnly).FirstOrDefault();
         return file is not null ? File.ReadAllText(file) : null;
     }
 
-    private static List<MetadataReference> LoadProjectBinReferences(string projectDir, string configuration)
+    // Parses the <TargetFramework> element from the project's csproj. Falls
+    // back to `null` if the project uses multi-targeting (<TargetFrameworks>)
+    // or the element is missing — both cases require explicit handling the
+    // caller should surface as an error.
+    private static string? ReadTargetFramework(string csprojPath)
+    {
+        try
+        {
+            var doc = System.Xml.Linq.XDocument.Load(csprojPath);
+            // Csproj files use no XML namespace for SDK-style projects, so
+            // plain LocalName matching works without xmlns gymnastics.
+            return doc.Descendants()
+                .FirstOrDefault(e => e.Name.LocalName == "TargetFramework")
+                ?.Value?.Trim();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"razorshave: failed to read TargetFramework from {csprojPath}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static List<MetadataReference> LoadProjectBinReferences(string projectDir, string configuration, string tfm)
     {
         // Scan the user project's output bin for DLLs other than the SDK-shared
         // ones (those already live in MetadataReferenceLoader.SharedFramework()).
         // This is a pragmatic stand-in for reading @(ReferencePath) from MSBuild;
         // revisit if the signal gets noisy.
-        var binDir = Path.Combine(projectDir, "bin", configuration, "net10.0");
+        var binDir = Path.Combine(projectDir, "bin", configuration, tfm);
         if (!Directory.Exists(binDir)) return [];
 
         // Skip the user project's own output DLL. Including it loads a
@@ -603,7 +659,7 @@ internal static class BuildCommand
         if (outputName is null)
         {
             Console.Error.WriteLine("razorshave: could not read esbuild metafile — bundle output name unknown");
-            return new BundleResult(8, "");
+            return new BundleResult(ExitEsbuildMetaMissing, "");
         }
         return new BundleResult(0, outputName);
     }
@@ -629,7 +685,8 @@ internal static class BuildCommand
         string projectDir,
         string runtimeStaging,
         string bundleFileName,
-        string configuration)
+        string configuration,
+        string tfm)
     {
         // Drop individual component js + main.js + runtime/ — the bundle has
         // them all inlined. Keep only the hashed bundle and the index.html.
@@ -654,7 +711,7 @@ internal static class BuildCommand
 
         // Razor scoped-CSS bundle lives under obj/<config>/<tfm>/scopedcss/bundle/
         // as <AssemblyName>.styles.css. Copy it alongside the other assets.
-        var scopedCssLink = CopyScopedCssBundle(distDir, projectDir, configuration);
+        var scopedCssLink = CopyScopedCssBundle(distDir, projectDir, configuration, tfm);
 
         WriteIndexHtml(distDir, bundleFileName, BuildCssLinks(distDir, scopedCssLink));
         WriteDeployConfigs(distDir);
@@ -708,9 +765,9 @@ internal static class BuildCommand
         }
     }
 
-    private static string? CopyScopedCssBundle(string distDir, string projectDir, string configuration)
+    private static string? CopyScopedCssBundle(string distDir, string projectDir, string configuration, string tfm)
     {
-        var scopedDir = Path.Combine(projectDir, "obj", configuration, "net10.0", "scopedcss", "bundle");
+        var scopedDir = Path.Combine(projectDir, "obj", configuration, tfm, "scopedcss", "bundle");
         if (!Directory.Exists(scopedDir)) return null;
         var bundleFile = Directory.EnumerateFiles(scopedDir, "*.styles.css").FirstOrDefault();
         if (bundleFile is null) return null;
@@ -742,9 +799,9 @@ internal static class BuildCommand
             .FirstOrDefault();
     }
 
-    private static string? FindGeneratedRazorRoot(string projectDir, string configuration)
+    private static string? FindGeneratedRazorRoot(string projectDir, string configuration, string tfm)
     {
-        var candidate = Path.Combine(projectDir, "obj", configuration, "net10.0", "generated",
+        var candidate = Path.Combine(projectDir, "obj", configuration, tfm, "generated",
             "Microsoft.CodeAnalysis.Razor.Compiler",
             "Microsoft.NET.Sdk.Razor.SourceGenerators.RazorSourceGenerator");
         return Directory.Exists(candidate) ? candidate : null;
