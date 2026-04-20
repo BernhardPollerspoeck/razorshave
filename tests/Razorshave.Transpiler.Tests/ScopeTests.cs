@@ -68,6 +68,35 @@ public sealed class ScopeTests
     }
 
     [Fact]
+    public void Uppercase_instance_variable_does_not_trigger_static_rewrite()
+    {
+        // Regression for StaticMemberRewrites.TryGetStaticReceiver silent
+        // fail: without SemanticModel the heuristic matched any uppercase
+        // identifier as a static type, so `Things.Count()` on an instance
+        // field `List<T> Things` would get rewritten to `Things.length` —
+        // wrong because Things is `this.things` (a field access, not a
+        // static type).
+        var source = $$"""
+            {{RazorGenHeader}}
+            public partial class Shadow : ComponentBase
+            {
+                private System.Collections.Generic.List<int> Things = new();
+                private int CountThem() => Things.Count;
+                protected override void BuildRenderTree(RenderTreeBuilder __builder) { }
+            }
+            """;
+
+        var js = Transpile(source);
+
+        // `Things.Count` is property access (no parens) — should emit
+        // `this.things.count` (camelCase of Count via member access).
+        Assert.Contains("this.things.count", js);
+        // And must NOT have been misread as a static `.Count()` call
+        // that the rewrite would have turned into `.length`.
+        Assert.DoesNotContain("Things.length", js);
+    }
+
+    [Fact]
     public void Primary_ctor_parameter_stays_bare_in_super_call()
     {
         // Regression for the TDZ crash: `super(http)` where `http` is a primary

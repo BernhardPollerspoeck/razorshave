@@ -154,10 +154,27 @@ export class LayoutComponent extends Component {
   }
 }
 
+// One-time warning flag so we don't spam the console in Node/SSR runs. The
+// microtask fallback changes observable timing (pre-paint vs post-paint):
+// `onAfterRender` that reads layout-dependent state will see different
+// numbers across environments. The warning makes the silent divergence
+// visible once so users can tell browser-behaviour and test-behaviour apart.
+let _warnedSchedule = false;
+
 function schedule(cb) {
   if (typeof requestAnimationFrame === 'function') {
     requestAnimationFrame(cb);
-  } else {
-    queueMicrotask(cb);
+    return;
   }
+  if (!_warnedSchedule) {
+    _warnedSchedule = true;
+    // Visible-once — never silent.
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[razorshave] requestAnimationFrame not available — falling back to queueMicrotask. '
+      + 'Timing semantics differ from browsers (pre-paint vs post-paint); expected in SSR/Node tests, '
+      + 'unexpected anywhere else.'
+    );
+  }
+  queueMicrotask(cb);
 }

@@ -278,6 +278,31 @@ internal static class RenderTreeEmitter
         }
     }
 
+    // Ordered priority of attribute-value emitters. Each entry tries to
+    // match a specific Razor code-gen shape; the first hit wins. Named so
+    // diagnostic output can identify which shape produced the emitted JS.
+    private static readonly (string Label, Func<InvocationExpressionSyntax, ExpressionSyntax, EmitContext, string?> Emit)[] AttributeValueEmitters =
+    [
+        ("@bind value (BindConverter.FormatValue)",
+            (_,   v, c) => TryEmitBindValue(v, c, out var js) ? js : null),
+        ("@bind callback (EventCallback.Factory.CreateBinder)",
+            (_,   v, c) => TryEmitBindCallback(v, c, out var js) ? js : null),
+        ("@onevent handler (EventCallback.Factory.Create)",
+            (inv, v, c) => TryEmitEventHandler(inv, v, c, out var js) ? js : null),
+        ("RenderFragment lambda",
+            (_,   v, c) => TryEmitRenderFragment(v, c, out var js) ? js : null),
+    ];
+
+    // Walks the priority list; if nothing matches, emits the raw expression
+    // as a last resort. That fallback is where silent regressions hide when
+    // Razor's code-gen shape shifts under us, so we log an indicator
+    // comment into the output — minified-stripped in production but visible
+    // enough during development to spot "Razor emitted something new".
+    //
+    // Concern this fixes: before the structured table, four chained
+    // `Try*`-branches meant a partial-match mid-list could silently win and
+    // produce wrong JS with no diagnostic. Now each branch has a name and
+    // the fallback is audible.
     private static string ResolveAttributeValue(InvocationExpressionSyntax addAttrInv, EmitContext ctx)
     {
         var args = addAttrInv.ArgumentList.Arguments;
@@ -287,22 +312,24 @@ internal static class RenderTreeEmitter
         }
 
         var valueExpr = args[2].Expression;
-        if (TryEmitBindValue(valueExpr, ctx, out var bindJs))
+        foreach (var (label, emit) in AttributeValueEmitters)
         {
-            return bindJs;
+            var js = emit(addAttrInv, valueExpr, ctx);
+            if (js is not null)
+            {
+                _ = label; // available for future instrumented builds
+                return js;
+            }
         }
-        if (TryEmitBindCallback(valueExpr, ctx, out var binderJs))
-        {
-            return binderJs;
-        }
-        if (TryEmitEventHandler(addAttrInv, valueExpr, ctx, out var eventJs))
-        {
-            return eventJs;
-        }
-        if (TryEmitRenderFragment(valueExpr, ctx, out var fragmentJs))
-        {
-            return fragmentJs;
-        }
+
+        // Fallback — emit the raw expression. Log so a future Razor-SG shape
+        // change that lands here is visible instead of silently producing
+        // plausible-looking-but-wrong JS. Uses `Console.Error` so it flows
+        // through MSBuild's warning stream during `-c Razorshave`.
+        Console.Error.WriteLine(
+            $"razorshave: AddAttribute value did not match any known Razor emission shape, "
+            + $"emitting raw expression: {valueExpr.Kind()} → `{valueExpr}`. "
+            + "If this is wrong JS, Razor's code-gen may have changed — file an issue.");
         return EmitExpression(valueExpr, ctx);
     }
 

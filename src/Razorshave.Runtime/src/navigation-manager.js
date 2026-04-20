@@ -7,8 +7,14 @@
 //
 // Guarded against SSR / non-browser environments with `typeof window` checks
 // so importing this module in Node (e.g., Vitest config files) doesn't blow up.
+// The check happens at EVERY access rather than at module-load — Vitest and
+// other test runners inject jsdom AFTER module initialisation, and a
+// module-load snapshot would otherwise stay `false` for the whole run and
+// silently drop every navigation event.
 
-const hasWindow = typeof window !== 'undefined';
+function hasWindow() {
+  return typeof window !== 'undefined';
+}
 
 class NavigationManager {
   constructor() {
@@ -16,15 +22,15 @@ class NavigationManager {
   }
 
   get uri() {
-    return hasWindow ? window.location.href : '';
+    return hasWindow() ? window.location.href : '';
   }
 
   get pathname() {
-    return hasWindow ? window.location.pathname : '/';
+    return hasWindow() ? window.location.pathname : '/';
   }
 
   navigateTo(path) {
-    if (!hasWindow) return;
+    if (!hasWindow()) return;
     window.history.pushState(null, '', path);
     this._emit(path);
   }

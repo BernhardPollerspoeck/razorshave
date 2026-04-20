@@ -1,5 +1,6 @@
 using System.Text;
 
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace Razorshave.Cli.Transpiler;
@@ -26,8 +27,7 @@ internal static class StaticMemberRewrites
     /// </summary>
     public static bool TryRewriteMemberAccess(MemberAccessExpressionSyntax mae, StringBuilder sb, EmitContext ctx)
     {
-        _ = ctx;
-        if (!TryGetStaticReceiver(mae.Expression, out var typeName)) return false;
+        if (!TryGetStaticReceiver(mae.Expression, ctx, out var typeName)) return false;
         var memberName = mae.Name.Identifier.Text;
 
         switch ((typeName, memberName))
@@ -95,7 +95,7 @@ internal static class StaticMemberRewrites
             }
         }
 
-        if (!TryGetStaticReceiver(mae.Expression, out var typeName)) return false;
+        if (!TryGetStaticReceiver(mae.Expression, ctx, out var typeName)) return false;
         var memberName = mae.Name.Identifier.Text;
         var args = inv.ArgumentList.Arguments;
 
@@ -140,24 +140,41 @@ internal static class StaticMemberRewrites
         return false;
     }
 
-    // Recognises both `string.X` (PredefinedType keyword) and `Guid.X`
-    // (bare identifier). Bare identifiers follow the convention that
-    // PascalCase names that aren't class members reference types — the
-    // same heuristic ExpressionEmitter uses when choosing between
-    // `this.x` and bare `x`.
-    private static bool TryGetStaticReceiver(ExpressionSyntax expr, out string typeName)
+    // Resolves <paramref name="expr"/> to a static-receiver type name.
+    // PredefinedTypeSyntax (`string`, `int`, …) returns its keyword directly.
+    // For bare identifiers we consult the SemanticModel: match only when the
+    // symbol is actually a type, not a user variable. Without the semantic
+    // check, code like `MyVar.Count()` where `MyVar` is an instance variable
+    // would be silently mis-rewritten by our `.Count()` → `.length` rule.
+    private static bool TryGetStaticReceiver(ExpressionSyntax expr, EmitContext ctx, out string typeName)
     {
-        switch (expr)
+        if (expr is PredefinedTypeSyntax pt)
         {
-            case PredefinedTypeSyntax pt:
-                typeName = pt.Keyword.Text;
+            typeName = pt.Keyword.Text;
+            return true;
+        }
+        if (expr is IdentifierNameSyntax id)
+        {
+            var symbol = ctx.Model.GetSymbolInfo(id).Symbol;
+            if (symbol is INamedTypeSymbol nts)
+            {
+                typeName = nts.Name;
                 return true;
-            case IdentifierNameSyntax id when id.Identifier.Text.Length > 0 && char.IsUpper(id.Identifier.Text[0]):
+            }
+            // Fallback for contexts where SemanticModel can't resolve (e.g. a
+            // missing reference): use the uppercase-heuristic as a last-resort
+            // guess, but only for types we actually rewrite — avoids false
+            // positives on arbitrary instance variables. Anything we don't
+            // handle ends up in the switch default → no-op.
+            if (symbol is null
+                && id.Identifier.Text.Length > 0
+                && char.IsUpper(id.Identifier.Text[0]))
+            {
                 typeName = id.Identifier.Text;
                 return true;
-            default:
-                typeName = "";
-                return false;
+            }
         }
+        typeName = "";
+        return false;
     }
 }

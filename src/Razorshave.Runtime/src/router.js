@@ -26,17 +26,45 @@ export function matchRoute(pattern, path) {
   return params;
 }
 
+// Sort key that mirrors Blazor's route-priority rules: more specific
+// patterns win over more general ones regardless of source order, so a
+// user who registers routes in any order gets deterministic matching.
+//
+// Rule order (ascending priority):
+//   1. Literal segments beat parameters (`/users/new` > `/users/{id}`)
+//   2. Parameters without constraints ties (both are one "slot")
+//   3. Longer patterns beat shorter ones at a tie
+// Returns a numeric key where HIGHER = more specific.
+function routeSpecificity(pattern) {
+  const segs = pattern.split('/').filter(Boolean);
+  let score = segs.length * 10;
+  for (const seg of segs) {
+    if (!seg.startsWith('{')) score += 1; // literal > parameter
+  }
+  return score;
+}
+
 // Renders whichever component currently matches `navigationManager.pathname`.
-// The Router itself has no subscription logic — mount() listens to
-// navigation events at the root and re-renders the whole tree, so every
-// child Router re-evaluates its match on the new path. That keeps the
-// naive-diff runtime simple; a real reconciler in v0.2 can subscribe more
-// granularly.
+// Routes are pre-sorted by specificity on mount so a more-specific pattern
+// (`/users/new`) wins over a less-specific one (`/users/{id}`) regardless
+// of the order the user declared them in. Without this the match silently
+// depended on array order — classic silent-fail shape.
 //
 // Props: { routes: [{ pattern, component }...], notFound?: Component }
 export class Router extends Component {
-  render() {
+  onInit() {
     const routes = this.props?.routes ?? [];
+    this._sortedRoutes = [...routes].sort(
+      (a, b) => routeSpecificity(b.pattern) - routeSpecificity(a.pattern));
+  }
+
+  onPropsChanged() {
+    // If the caller swapped the routes array, re-sort.
+    this.onInit();
+  }
+
+  render() {
+    const routes = this._sortedRoutes ?? [];
     const layout = this.props?.defaultLayout;
     const path = navigationManager.pathname;
 
