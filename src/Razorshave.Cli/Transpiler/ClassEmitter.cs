@@ -21,7 +21,7 @@ internal static class ClassEmitter
         var injects = CollectInjects(component);
         var ctx = new EmitContext
         {
-            ClassMembers = CollectMemberNames(component),
+            ClassMembers = CollectMemberNames(component, model),
             Model = model,
         };
 
@@ -43,7 +43,7 @@ internal static class ClassEmitter
         var baseName = GetBaseClassName(cls);
         var ctx = new EmitContext
         {
-            ClassMembers = CollectMemberNames(cls),
+            ClassMembers = CollectMemberNames(cls, model),
             Model = model,
         };
 
@@ -83,7 +83,7 @@ internal static class ClassEmitter
                     PropertyEmitter.Emit(prop, sb, ctx);
                     break;
 
-                case MethodDeclarationSyntax method when method.Identifier.Text == "BuildRenderTree":
+                case MethodDeclarationSyntax method when method.Identifier.Text == NameConventions.RazorBuildRenderTreeMethod:
                     RenderTreeEmitter.Emit(method, sb, ctx);
                     break;
 
@@ -112,15 +112,13 @@ internal static class ClassEmitter
 
         // Inside the constructor, primary-ctor parameters are local variables,
         // not `this.<name>` members — those are only populated after the
-        // `this.x = x` assignments below. So we emit base arguments with a
-        // scope that doesn't rewrite the param names (otherwise `super(http)`
-        // would become `super(this.http)` and blow up with TDZ on `this`).
-        var primaryParamSet = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var p in parameters) primaryParamSet.Add(p.Identifier.Text);
-        var ctorMembers = new HashSet<string>(ctx.ClassMembers, StringComparer.Ordinal);
-        ctorMembers.ExceptWith(primaryParamSet);
-        var ctorCtx = new EmitContext { ClassMembers = ctorMembers, Model = ctx.Model };
-
+        // `this.x = x` assignments below. Push them onto the local-scope
+        // stack so `super(http)` emits as bare `http`, not `this.http`
+        // (which would trigger TDZ because `this` isn't available before super).
+        var primaryParamNames = parameters.Select(p => p.Identifier.Text).ToArray();
+        ctx.PushLocalScope(primaryParamNames);
+        try
+        {
         sb.Append(Indent).Append("constructor(");
         for (var i = 0; i < parameters.Count; i++)
         {
@@ -137,7 +135,7 @@ internal static class ClassEmitter
             for (var i = 0; i < baseArgs.Arguments.Count; i++)
             {
                 if (i > 0) sb.Append(", ");
-                ExpressionEmitter.Emit(baseArgs.Arguments[i].Expression, sb, ctorCtx);
+                ExpressionEmitter.Emit(baseArgs.Arguments[i].Expression, sb, ctx);
             }
             sb.Append(");\n");
         }
@@ -157,6 +155,8 @@ internal static class ClassEmitter
             sb.Append("    this.").Append(n).Append(" = ").Append(n).Append(";\n");
         }
         sb.Append(Indent).Append("}\n");
+        }
+        finally { ctx.PopLocalScope(); }
     }
 
     private static ArgumentListSyntax? GetPrimaryBaseArguments(ClassDeclarationSyntax cls)
@@ -177,11 +177,8 @@ internal static class ClassEmitter
         if (cls.BaseList is null) return null;
         foreach (var baseType in cls.BaseList.Types)
         {
-            var raw = baseType.Type.ToString();
-            var lastDot = raw.LastIndexOf('.');
-            var simple = lastDot < 0 ? raw : raw[(lastDot + 1)..];
-            var gen = simple.IndexOf('<');
-            if (gen >= 0) simple = simple[..gen];
+            var simple = NameConventions.StripGenerics(
+                NameConventions.StripQualifiers(baseType.Type.ToString()));
 
             // Heuristic: a leading `I` followed by an uppercase letter marks
             // an interface (`IWeatherApi`). Everything else is treated as
@@ -243,7 +240,7 @@ internal static class ClassEmitter
     /// component class. Used by <see cref="ExpressionEmitter"/> to rewrite bare
     /// identifiers into <c>this.&lt;name&gt;</c> member access.
     /// </summary>
-    private static HashSet<string> CollectMemberNames(ClassDeclarationSyntax component)
+    private static HashSet<string> CollectMemberNames(ClassDeclarationSyntax component, SemanticModel model)
     {
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var member in component.Members)
@@ -278,46 +275,50 @@ internal static class ClassEmitter
             }
         }
 
-        AddInheritedMembers(component, names);
+        AddInheritedMembers(component, names, model);
 
         return names;
     }
 
-    private static void AddInheritedMembers(ClassDeclarationSyntax component, HashSet<string> names)
+    // Walk the base-class chain via SemanticModel and collect every public /
+    // protected member name. User code references inherited members as bare
+    // identifiers (e.g. `Get<T>(url)` from ApiClient, `StateHasChanged()`
+    // from ComponentBase); without knowing they're inherited, the emitter
+    // would leave them as global references that crash at load.
+    //
+    // Using SemanticModel reflection means `ApiClient.cs` stays the single
+    // source of truth — add a new `Patch` method there and the transpiler
+    // automatically rewrites `Patch` to `this.patch`, no sync required.
+    private static void AddInheritedMembers(ClassDeclarationSyntax component, HashSet<string> names, SemanticModel model)
     {
-        if (component.BaseList is null) return;
-
-        var baseName = component.BaseList.Types[0].Type.ToString();
-
-        // ComponentBase / LayoutComponentBase inherit StateHasChanged. Without
-        // this entry a bare `StateHasChanged` identifier in user Razor code
-        // would emit as a global reference and crash with "is not defined".
-        // Non-Razor classes (e.g. `[Client]` ApiClient subclasses) skip this —
-        // they have their own base and no StateHasChanged.
-        if (baseName.EndsWith("ComponentBase", StringComparison.Ordinal)
-            || baseName.EndsWith("LayoutComponentBase", StringComparison.Ordinal))
+        if (model.GetDeclaredSymbol(component) is not INamedTypeSymbol classSymbol)
         {
-            names.Add("StateHasChanged");
-        }
-        if (baseName.EndsWith("LayoutComponentBase", StringComparison.Ordinal))
-        {
-            names.Add("Body");
+            // SemanticModel couldn't resolve the class — references probably
+            // missing. Log so the degradation is visible; this is a silent-
+            // fail-style gap otherwise (inherited members not recognised
+            // → wrong JS emitted).
+            Console.Error.WriteLine($"razorshave: SemanticModel could not resolve {component.Identifier.Text}; inherited-member rewrites will miss.");
+            return;
         }
 
-        // ApiClient subclasses use the protected HTTP verbs; the runtime
-        // exposes them as lowercase instance methods (get, post, put, delete).
-        // Flagging them as inherited members lets ExpressionEmitter rewrite
-        // a bare `Get<T>(url)` call to `this.get(url)` — without this the
-        // reference leaks out as a global `Get` that crashes at load.
-        if (baseName.EndsWith("ApiClient", StringComparison.Ordinal))
+        for (var baseSym = classSymbol.BaseType;
+             baseSym is not null && baseSym.SpecialType != SpecialType.System_Object;
+             baseSym = baseSym.BaseType)
         {
-            names.Add("Get");
-            names.Add("Post");
-            names.Add("Put");
-            names.Add("Delete");
-            names.Add("ConfigureRequestAsync");
-            names.Add("HandleResponseAsync");
-            names.Add("HttpClient");
+            foreach (var member in baseSym.GetMembers())
+            {
+                // Only kinds the user would reference as bare identifiers in
+                // method bodies. Constructors, destructors, operators, and
+                // the implicit backing-field of an auto-property aren't
+                // callable as `ThisName()` in user code.
+                if (member.IsImplicitlyDeclared) continue;
+                if (member is not (IMethodSymbol { MethodKind: MethodKind.Ordinary } or IPropertySymbol or IFieldSymbol or IEventSymbol))
+                    continue;
+                if (member.DeclaredAccessibility is not (Accessibility.Public
+                        or Accessibility.Protected or Accessibility.ProtectedOrInternal))
+                    continue;
+                names.Add(member.Name);
+            }
         }
     }
 }

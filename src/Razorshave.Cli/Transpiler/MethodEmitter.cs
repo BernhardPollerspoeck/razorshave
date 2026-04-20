@@ -22,11 +22,9 @@ namespace Razorshave.Cli.Transpiler;
 /// </remarks>
 internal static class MethodEmitter
 {
-    private const string BodyIndent = "    ";
-
     public static void Emit(MethodDeclarationSyntax method, StringBuilder sb, EmitContext ctx)
     {
-        if (method.Identifier.Text == "BuildRenderTree")
+        if (method.Identifier.Text == NameConventions.RazorBuildRenderTreeMethod)
         {
             return;
         }
@@ -43,13 +41,13 @@ internal static class MethodEmitter
         {
             foreach (var stmt in method.Body.Statements)
             {
-                StatementEmitter.Emit(stmt, sb, ctx, BodyIndent);
+                StatementEmitter.Emit(stmt, sb, ctx, NameConventions.MethodBodyIndent);
             }
         }
         else if (method.ExpressionBody is not null)
         {
             // `=> expr` — emit as `return expr;`
-            sb.Append(BodyIndent).Append("return ");
+            sb.Append(NameConventions.MethodBodyIndent).Append("return ");
             ExpressionEmitter.Emit(method.ExpressionBody.Expression, sb, ctx);
             sb.Append(";\n");
         }

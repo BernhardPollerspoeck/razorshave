@@ -117,19 +117,30 @@ internal static class ExpressionEmitter
                 // 1:1 mapping for C# lambdas; only block bodies need special
                 // handling (StatementEmitter), and those only appear in
                 // RenderFragment delegates which have their own emitter path.
-                sb.Append('(').Append(simple.Parameter.Identifier.Text).Append(") => ");
-                EmitLambdaBody(simple.Body, sb, ctx);
+                {
+                    var param = simple.Parameter.Identifier.Text;
+                    sb.Append('(').Append(param).Append(") => ");
+                    ctx.PushLocalScope([param]);
+                    try { EmitLambdaBody(simple.Body, sb, ctx); }
+                    finally { ctx.PopLocalScope(); }
+                }
                 break;
 
             case ParenthesizedLambdaExpressionSyntax paren2:
-                sb.Append('(');
-                for (var i = 0; i < paren2.ParameterList.Parameters.Count; i++)
                 {
-                    if (i > 0) sb.Append(", ");
-                    sb.Append(paren2.ParameterList.Parameters[i].Identifier.Text);
+                    var parms = paren2.ParameterList.Parameters
+                        .Select(p => p.Identifier.Text).ToArray();
+                    sb.Append('(');
+                    for (var i = 0; i < parms.Length; i++)
+                    {
+                        if (i > 0) sb.Append(", ");
+                        sb.Append(parms[i]);
+                    }
+                    sb.Append(") => ");
+                    ctx.PushLocalScope(parms);
+                    try { EmitLambdaBody(paren2.Body, sb, ctx); }
+                    finally { ctx.PopLocalScope(); }
                 }
-                sb.Append(") => ");
-                EmitLambdaBody(paren2.Body, sb, ctx);
                 break;
 
             case ParenthesizedExpressionSyntax paren:
@@ -201,7 +212,12 @@ internal static class ExpressionEmitter
                 // matches .NET semantics. Floating-point and widening casts
                 // are already no-ops.
                 var castType = cast.Type.ToString();
-                if (castType is "int" or "long" or "short" or "byte" or "sbyte" or "uint" or "ulong" or "ushort")
+                // Integer narrowing: wrap in Math.trunc so `(int)1.9 === 1`
+                // matches .NET semantics. `char` is an integer in C# (UTF-16
+                // code unit); `nint`/`nuint` are the native-width variants.
+                if (castType is "int" or "long" or "short" or "byte" or "sbyte"
+                             or "uint" or "ulong" or "ushort" or "nint" or "nuint"
+                             or "char")
                 {
                     sb.Append("Math.trunc(");
                     Emit(cast.Expression, sb, ctx);
@@ -524,6 +540,17 @@ internal static class ExpressionEmitter
 
     private static void EmitIdentifier(string name, StringBuilder sb, EmitContext ctx)
     {
+        // Local scopes (lambda params, for-loop vars, primary-ctor params
+        // inside the ctor body) shadow class members. A `class X { int item;
+        // ... items.Select(item => item.Name) }` must emit the lambda's
+        // `item` as bare `item`, NOT `this.item`. The rewrite-to-this path
+        // only applies to bare identifiers that resolve to class-level
+        // members at the current scope.
+        if (ctx.IsLocallyShadowed(name))
+        {
+            sb.Append(name);
+            return;
+        }
         if (ctx.ClassMembers.Contains(name))
         {
             sb.Append("this.").Append(NameConventions.ToCamelCase(name));

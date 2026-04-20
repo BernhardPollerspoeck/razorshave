@@ -24,20 +24,11 @@ public static class Transpiler
     /// equivalent. Returns an empty string when the source contains no
     /// recognised component class.
     /// </summary>
-    public static string Transpile(string source, IReadOnlyList<MetadataReference>? additionalReferences = null)
+    public static string Transpile(string source, IReadOnlyList<MetadataReference>? references = null, string? globalUsings = null)
     {
         ArgumentNullException.ThrowIfNull(source);
 
-        var tree = CSharpSyntaxTree.ParseText(source);
-        var references = additionalReferences is { Count: > 0 }
-            ? MetadataReferenceLoader.SharedFramework().Concat(additionalReferences).ToArray()
-            : MetadataReferenceLoader.SharedFramework();
-        var compilation = CSharpCompilation.Create(
-            assemblyName: "Razorshave.Transpile",
-            syntaxTrees: [tree],
-            references: references,
-            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-        var model = compilation.GetSemanticModel(tree);
+        var (tree, model) = BuildCompilation(source, references, globalUsings);
 
         var component = tree.GetRoot()
             .DescendantNodes()
@@ -62,20 +53,11 @@ public static class Transpiler
     /// form (no <c>_injects</c> manifest, no <c>extends Component</c>).
     /// Returns an empty string when no matching class is present.
     /// </summary>
-    public static string TranspileClientClass(string source, IReadOnlyList<MetadataReference>? additionalReferences = null)
+    public static string TranspileClientClass(string source, IReadOnlyList<MetadataReference>? references = null, string? globalUsings = null)
     {
         ArgumentNullException.ThrowIfNull(source);
 
-        var tree = CSharpSyntaxTree.ParseText(source);
-        var references = additionalReferences is { Count: > 0 }
-            ? MetadataReferenceLoader.SharedFramework().Concat(additionalReferences).ToArray()
-            : MetadataReferenceLoader.SharedFramework();
-        var compilation = CSharpCompilation.Create(
-            assemblyName: "Razorshave.Transpile",
-            syntaxTrees: [tree],
-            references: references,
-            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-        var model = compilation.GetSemanticModel(tree);
+        var (tree, model) = BuildCompilation(source, references, globalUsings);
 
         var cls = tree.GetRoot()
             .DescendantNodes()
@@ -88,5 +70,36 @@ public static class Transpiler
         HeaderEmitter.Emit(sb, cls);
         ClassEmitter.EmitPlain(cls, model, sb);
         return sb.ToString();
+    }
+
+    // Shared compilation-building path for both entry points. When the caller
+    // passes an explicit `references` list it's used as-is (typical for
+    // BuildCommand which pre-builds the list once per build). When omitted
+    // — e.g. from unit tests — we fall back to the cached shared-framework
+    // references so direct-from-source transpile calls stay fast.
+    //
+    // `globalUsings` is the text of the project's `<Name>.GlobalUsings.g.cs`
+    // file — the implicit `global using` declarations MSBuild generates for
+    // Web SDK projects. Without them, unqualified types like `HttpClient`
+    // fail to resolve in the source file and SemanticModel returns null
+    // for every expression that depends on them (silently breaking every
+    // attribute-aware rewrite downstream).
+    private static (SyntaxTree Tree, SemanticModel Model) BuildCompilation(string source, IReadOnlyList<MetadataReference>? references, string? globalUsings)
+    {
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var trees = new List<SyntaxTree> { tree };
+        if (!string.IsNullOrEmpty(globalUsings))
+        {
+            trees.Add(CSharpSyntaxTree.ParseText(globalUsings));
+        }
+        var refs = references is { Count: > 0 }
+            ? references
+            : MetadataReferenceLoader.SharedFramework();
+        var compilation = CSharpCompilation.Create(
+            assemblyName: "Razorshave.Transpile",
+            syntaxTrees: trees,
+            references: refs,
+            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        return (tree, compilation.GetSemanticModel(tree));
     }
 }

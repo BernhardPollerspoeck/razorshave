@@ -6,6 +6,8 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
+using Razorshave.Cli.Transpiler;
+
 using static Razorshave.Cli.Transpiler.Transpiler;
 
 namespace Razorshave.Cli;
@@ -78,14 +80,23 @@ internal static class BuildCommand
         Directory.CreateDirectory(distDir);
 
         Console.WriteLine("[2/6] Transpiling components ...");
-        var (components, routesConfig) = TranspileAll(generatedRoot, distDir, absProject, configuration);
+        // Build the full reference list once: shared framework + the user
+        // project's output DLLs. Every transpile call in this invocation
+        // shares the same list, avoiding the per-Transpile concat hot loop
+        // that previously ran for each component.
+        var references = BuildReferenceList(absProject, configuration);
+        // Pick up the project's GlobalUsings.g.cs so implicit-using types
+        // (e.g. `HttpClient` from Web SDK's `System.Net.Http`) resolve in
+        // SemanticModel just as they do in the real build.
+        var globalUsings = LoadGlobalUsings(absProject, configuration);
+        var (components, routesConfig) = TranspileAll(generatedRoot, distDir, references, globalUsings);
         if (components.Count == 0)
         {
             Console.Error.WriteLine("razorshave: no component classes found");
             return 5;
         }
 
-        var clients = TranspileClientClasses(absProject, distDir, configuration);
+        var clients = TranspileClientClasses(absProject, distDir, references, globalUsings);
 
         Console.WriteLine("[3/6] Copying runtime ...");
         var runtimeSrc = FindRuntimeSource();
@@ -138,10 +149,9 @@ internal static class BuildCommand
     // collects its implemented interface names for auto-registration in the
     // generated main.js. Folders that are build artefacts (bin/, obj/) are
     // skipped so we don't pick up IDE-generated junk.
-    private static List<TranspiledClient> TranspileClientClasses(string projectDir, string distDir, string configuration)
+    private static List<TranspiledClient> TranspileClientClasses(string projectDir, string distDir, IReadOnlyList<MetadataReference> references, string? globalUsings)
     {
         var clients = new List<TranspiledClient>();
-        var projectRefs = LoadProjectBinReferences(projectDir, configuration);
 
         foreach (var csFile in EnumerateUserCsFiles(projectDir))
         {
@@ -157,7 +167,7 @@ internal static class BuildCommand
                 .FirstOrDefault(Razorshave.Cli.Transpiler.ComponentClassifier.IsClientClass);
             if (cls is null) continue;
 
-            var js = Razorshave.Cli.Transpiler.Transpiler.TranspileClientClass(source, projectRefs);
+            var js = Razorshave.Cli.Transpiler.Transpiler.TranspileClientClass(source, references, globalUsings);
             if (string.IsNullOrWhiteSpace(js)) continue;
 
             var name = cls.Identifier.Text;
@@ -229,17 +239,10 @@ internal static class BuildCommand
         IReadOnlyList<string> InterfaceKeys);
 
     private static (List<TranspiledComponent> components, RouteExtractor.RoutesConfig routesConfig)
-        TranspileAll(string generatedRoot, string distDir, string projectDir, string configuration)
+        TranspileAll(string generatedRoot, string distDir, IReadOnlyList<MetadataReference> references, string? globalUsings)
     {
         var components = new List<TranspiledComponent>();
         var routesConfig = RouteExtractor.RoutesConfig.Empty;
-
-        // Feed the user project's referenced assemblies into every per-file
-        // compilation. Without this, SemanticModel can't resolve types like
-        // `IStore<T>` from Razorshave.Abstractions — event-symbol detection
-        // silently falls through and patterns like `Store.OnChange += X`
-        // stay as raw C# text in the JS output.
-        var projectRefs = LoadProjectBinReferences(projectDir, configuration);
 
         foreach (var genFile in Directory.EnumerateFiles(generatedRoot, "*_razor.g.cs", SearchOption.AllDirectories))
         {
@@ -259,7 +262,7 @@ internal static class BuildCommand
                 continue;
             }
 
-            var js = Transpile(source, projectRefs);
+            var js = Transpile(source, references, globalUsings);
             if (string.IsNullOrWhiteSpace(js)) continue;
 
             var outFile = Path.Combine(distDir, $"{className}.js");
@@ -274,6 +277,35 @@ internal static class BuildCommand
             routesConfig);
     }
 
+    // Build the full metadata-reference list for one BuildCommand.Run. Shared
+    // framework DLLs come from the static loader (cached because they don't
+    // change during the process lifetime); project-local DLLs are loaded
+    // fresh every time because the user may rebuild mid-session.
+    //
+    // Centralising the merge here avoids re-doing the concat on every
+    // Transpile call and means SemanticModel-dependent detections (event
+    // symbols, [JsonPropertyName], inherited-member rewrites) consistently
+    // see the same reference set across the whole build.
+    private static List<MetadataReference> BuildReferenceList(string projectDir, string configuration)
+    {
+        var refs = new List<MetadataReference>(MetadataReferenceLoader.SharedFramework());
+        refs.AddRange(LoadProjectBinReferences(projectDir, configuration));
+        return refs;
+    }
+
+    // Reads `<Project>.GlobalUsings.g.cs` from the user's obj dir. MSBuild
+    // generates this file for Web and other SDKs that ship implicit-using
+    // declarations (`global using System.Net.Http;` for Web, for example).
+    // Returns null when the file doesn't exist — projects without Web SDK
+    // don't get the file and work fine without these globals.
+    private static string? LoadGlobalUsings(string projectDir, string configuration)
+    {
+        var objDir = Path.Combine(projectDir, "obj", configuration, "net10.0");
+        if (!Directory.Exists(objDir)) return null;
+        var file = Directory.EnumerateFiles(objDir, "*.GlobalUsings.g.cs", SearchOption.TopDirectoryOnly).FirstOrDefault();
+        return file is not null ? File.ReadAllText(file) : null;
+    }
+
     private static List<MetadataReference> LoadProjectBinReferences(string projectDir, string configuration)
     {
         // Scan the user project's output bin for DLLs other than the SDK-shared
@@ -282,9 +314,25 @@ internal static class BuildCommand
         // revisit if the signal gets noisy.
         var binDir = Path.Combine(projectDir, "bin", configuration, "net10.0");
         if (!Directory.Exists(binDir)) return [];
+
+        // Skip the user project's own output DLL. Including it loads a
+        // compiled copy of the same types we're parsing from source —
+        // SemanticModel then sees duplicate definitions, bails out on
+        // resolution, and every `[JsonPropertyName]` / event-symbol /
+        // inherited-member lookup silently fails.
+        var csproj = Directory.EnumerateFiles(projectDir, "*.csproj", SearchOption.TopDirectoryOnly).FirstOrDefault();
+        var selfDllName = csproj is null
+            ? null
+            : Path.GetFileNameWithoutExtension(csproj) + ".dll";
+
         var refs = new List<MetadataReference>();
         foreach (var dll in Directory.GetFiles(binDir, "*.dll", SearchOption.TopDirectoryOnly))
         {
+            if (selfDllName is not null
+                && string.Equals(Path.GetFileName(dll), selfDllName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
             try
             {
                 refs.Add(MetadataReference.CreateFromFile(dll));
@@ -307,13 +355,7 @@ internal static class BuildCommand
     }
 
     private static bool IsComponentSubclass(ClassDeclarationSyntax cls)
-    {
-        if (cls.BaseList is null || cls.BaseList.Types.Count == 0) return false;
-        var raw = cls.BaseList.Types[0].Type.ToString();
-        var lastDot = raw.LastIndexOf('.');
-        var simple = lastDot < 0 ? raw : raw[(lastDot + 1)..];
-        return simple is "ComponentBase" or "LayoutComponentBase";
-    }
+        => Transpiler.ComponentClassifier.IsRazorComponent(cls);
 
     // --- Runtime + Assets ---
 

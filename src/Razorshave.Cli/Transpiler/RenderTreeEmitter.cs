@@ -40,7 +40,7 @@ namespace Razorshave.Cli.Transpiler;
 /// </remarks>
 internal static class RenderTreeEmitter
 {
-    private const string ReturnIndent = "    ";
+    private const string ReturnIndent = NameConventions.MethodBodyIndent;
 
     public static void Emit(MethodDeclarationSyntax buildRenderTree, StringBuilder sb, EmitContext ctx)
     {
@@ -192,7 +192,7 @@ internal static class RenderTreeEmitter
             case "OpenComponent":
             {
                 var typeName = methodName is GenericNameSyntax g
-                    ? StripGlobalAndNamespace(g.TypeArgumentList.Arguments[0].ToString())
+                    ? NameConventions.StripQualifiers(g.TypeArgumentList.Arguments[0].ToString())
                     : "UnknownComponent";
                 var newFrame = new Frame(FrameKind.Component, typeName);
                 frameStack.Push(newFrame);
@@ -215,6 +215,17 @@ internal static class RenderTreeEmitter
             case "AddAttribute":
             case "AddComponentParameter":
             {
+                // Defensive: Razor-SG currently always emits these inside an
+                // Open-scope, but a degenerate input (or a future SG change)
+                // that puts them at top-level would otherwise throw
+                // InvalidOperationException on the Peek below.
+                if (frameStack.Count == 0)
+                {
+                    destStack.Peek().Add(new LiteralOp(
+                        $"/* TODO: {builderName}.{name} outside any Open-scope */"));
+                    return;
+                }
+
                 // Razor almost always emits the attribute name as a string
                 // literal. A few framework shapes (Router's AppAssembly,
                 // `@typeof(...)`-style bindings) pass a computed expression.
@@ -304,7 +315,7 @@ internal static class RenderTreeEmitter
         if (valueExpr is not InvocationExpressionSyntax inv) return false;
         if (inv.Expression is not MemberAccessExpressionSyntax mae) return false;
         if (mae.Name.Identifier.Text != "FormatValue") return false;
-        if (StripGlobalAndNamespace(mae.Expression.ToString()) != "BindConverter") return false;
+        if (NameConventions.StripQualifiers(mae.Expression.ToString()) != "BindConverter") return false;
         if (inv.ArgumentList.Arguments.Count == 0) return false;
 
         js = EmitExpression(inv.ArgumentList.Arguments[0].Expression, ctx);
@@ -323,7 +334,7 @@ internal static class RenderTreeEmitter
         if (valueExpr is not InvocationExpressionSyntax inv) return false;
         if (inv.Expression is not MemberAccessExpressionSyntax mae) return false;
         if (mae.Name.Identifier.Text != "CreateBinder") return false;
-        if (StripGlobalAndNamespace(mae.Expression.ToString()) != "Factory") return false;
+        if (NameConventions.StripQualifiers(mae.Expression.ToString()) != "Factory") return false;
         if (inv.ArgumentList.Arguments.Count < 2) return false;
 
         var setterExpr = inv.ArgumentList.Arguments[1].Expression;
@@ -390,7 +401,7 @@ internal static class RenderTreeEmitter
     {
         js = "";
         if (valueExpr is not CastExpressionSyntax cast) return false;
-        if (StripGlobalAndNamespace(cast.Type.ToString()) != "RenderFragment") return false;
+        if (NameConventions.StripQualifiers(cast.Type.ToString()) != "RenderFragment") return false;
 
         var inner = cast.Expression;
         while (inner is ParenthesizedExpressionSyntax paren) inner = paren.Expression;
@@ -602,15 +613,6 @@ internal static class RenderTreeEmitter
                 sb.Append(indent).Append("}\n");
                 return;
         }
-    }
-
-    /// <summary>
-    /// <c>global::Microsoft.AspNetCore.Components.Web.PageTitle</c> → <c>PageTitle</c>.
-    /// </summary>
-    private static string StripGlobalAndNamespace(string qualified)
-    {
-        var lastDot = qualified.LastIndexOf('.');
-        return lastDot < 0 ? qualified : qualified[(lastDot + 1)..];
     }
 
     private enum FrameKind { Element, Component }

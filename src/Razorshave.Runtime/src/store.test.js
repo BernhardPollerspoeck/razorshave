@@ -91,6 +91,25 @@ describe('Store', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
+  it('a batch that throws mid-way does not emit a change for the partial state', () => {
+    // Regression for the error-path gap: partial mutation + change-notify
+    // would surface half-applied state to the UI. On throw we drop the
+    // dirty flag and rethrow; no listeners fire.
+    const s = new Store();
+    const listener = vi.fn();
+    s.onChange(listener);
+
+    expect(() => s.batch(() => {
+      s.set('a', 1);
+      throw new Error('boom');
+    })).toThrow('boom');
+
+    expect(listener).not.toHaveBeenCalled();
+    // State IS partially mutated (rollback is caller's responsibility),
+    // but no notification fires for the incoherent frame.
+    expect(s.get('a')).toBe(1);
+  });
+
   it('nested batch only fires once after the outer exits', () => {
     const s = new Store();
     const listener = vi.fn();

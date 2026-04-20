@@ -1,3 +1,4 @@
+using KitchenSink.Client;
 using KitchenSink.Client.Components;
 using Razorshave.Abstractions;
 
@@ -11,6 +12,13 @@ builder.Services.AddRazorComponents()
 // ICookieStore) so components resolve them when the app runs as a Blazor
 // Server dev host. In the transpiled SPA the JS runtime takes over.
 builder.Services.AddRazorshave();
+
+// Typed HttpClient for the [Client] WeatherApi — so that the Blazor-Server
+// dev host can resolve IWeatherApi and hit open-meteo directly. In the
+// transpiled SPA this registration is ignored; the JS runtime constructs
+// WeatherApi with a null HttpClient (the transpiled methods use fetch()
+// directly, not this.HttpClient).
+builder.Services.AddHttpClient<IWeatherApi, WeatherApi>();
 
 var app = builder.Build();
 

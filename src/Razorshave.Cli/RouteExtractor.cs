@@ -32,7 +32,7 @@ internal static class RouteExtractor
         {
             foreach (var attr in attrList.Attributes)
             {
-                var simpleName = StripQualifiers(attr.Name.ToString());
+                var simpleName = Transpiler.NameConventions.StripQualifiers(attr.Name.ToString());
                 if (simpleName is not ("Route" or "RouteAttribute")) continue;
 
                 var args = attr.ArgumentList?.Arguments;
@@ -119,12 +119,7 @@ internal static class RouteExtractor
         var typeOf = expr is TypeOfExpressionSyntax direct
             ? direct
             : expr.DescendantNodes().OfType<TypeOfExpressionSyntax>().FirstOrDefault();
-        return typeOf is null ? null : StripQualifiers(typeOf.Type.ToString());
+        return typeOf is null ? null : Transpiler.NameConventions.StripQualifiers(typeOf.Type.ToString());
     }
 
-    private static string StripQualifiers(string qualified)
-    {
-        var lastDot = qualified.LastIndexOf('.');
-        return lastDot < 0 ? qualified : qualified[(lastDot + 1)..];
-    }
 }

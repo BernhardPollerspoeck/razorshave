@@ -50,15 +50,25 @@ export class Store {
   // Runs `updates` with change notifications suppressed and emits a single
   // change at the end if anything actually mutated. Supports nesting — only
   // the outermost batch flushes.
+  //
+  // If `updates` throws, we drop the pending dirty flag without emitting —
+  // partially-mutated state would otherwise trigger a UI update against a
+  // half-applied change. The exception still propagates so the caller can
+  // recover; the error boundary just doesn't paint an incoherent frame.
   batch(updates) {
     this._batchDepth++;
+    let threw = false;
     try {
       updates();
+    } catch (e) {
+      threw = true;
+      throw e;
     } finally {
       this._batchDepth--;
-      if (this._batchDepth === 0 && this._batchDirty) {
+      if (this._batchDepth === 0) {
+        const shouldEmit = this._batchDirty && !threw;
         this._batchDirty = false;
-        this._emitChange();
+        if (shouldEmit) this._emitChange();
       }
     }
   }
@@ -67,6 +77,11 @@ export class Store {
   // usual `onInit → subscribe, onDestroy → unsubscribe` dance is one line.
   // For transpiled Razor components the returned fn is unused — the runtime
   // calls `offChange(handler)` instead with the same bound reference.
+  //
+  // Listener set is snapshotted before dispatch (see `_emitChange`): a
+  // listener that subscribes DURING dispatch does not see the current event,
+  // only subsequent ones. A listener that unsubscribes itself during dispatch
+  // is safely removed for future events.
   onChange(handler) {
     this._listeners.add(handler);
     return () => this._listeners.delete(handler);

@@ -51,6 +51,12 @@ describe('Container', () => {
     expect(c.has('X')).toBe(false);
     expect(() => c.resolve('X')).toThrow();
   });
+
+  it('tryResolve returns undefined for missing services, the instance otherwise', () => {
+    c.register('A', { x: 1 });
+    expect(c.tryResolve('A')).toEqual({ x: 1 });
+    expect(c.tryResolve('missing')).toBeUndefined();
+  });
 });
 
 describe('default container singleton', () => {

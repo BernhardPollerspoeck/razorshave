@@ -27,7 +27,7 @@ namespace Razorshave.Cli.Transpiler;
 /// fine, doing it per <see cref="Transpiler.Transpile"/> call is wasteful.
 /// </para>
 /// </remarks>
-internal static class MetadataReferenceLoader
+public static class MetadataReferenceLoader
 {
     private static IReadOnlyList<MetadataReference>? _cachedSharedFramework;
 

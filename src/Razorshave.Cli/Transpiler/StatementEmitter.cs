@@ -83,6 +83,9 @@ internal static class StatementEmitter
                 break;
 
             case ForStatementSyntax forStmt:
+            {
+                var loopVars = forStmt.Declaration?.Variables
+                    .Select(v => v.Identifier.Text).ToArray() ?? [];
                 sb.Append(indent).Append("for (");
                 if (forStmt.Declaration is not null)
                 {
@@ -100,25 +103,39 @@ internal static class StatementEmitter
                     }
                 }
                 sb.Append("; ");
-                if (forStmt.Condition is not null) ExpressionEmitter.Emit(forStmt.Condition, sb, ctx);
-                sb.Append("; ");
-                for (var i = 0; i < forStmt.Incrementors.Count; i++)
+                // Condition + incrementors read the loop variable as a bare
+                // identifier; push its scope so `this.i` doesn't get emitted
+                // if a class member happens to be named `i`.
+                ctx.PushLocalScope(loopVars);
+                try
                 {
-                    if (i > 0) sb.Append(", ");
-                    ExpressionEmitter.Emit(forStmt.Incrementors[i], sb, ctx);
+                    if (forStmt.Condition is not null) ExpressionEmitter.Emit(forStmt.Condition, sb, ctx);
+                    sb.Append("; ");
+                    for (var i = 0; i < forStmt.Incrementors.Count; i++)
+                    {
+                        if (i > 0) sb.Append(", ");
+                        ExpressionEmitter.Emit(forStmt.Incrementors[i], sb, ctx);
+                    }
+                    sb.Append(") {\n");
+                    EmitStatementBody(forStmt.Statement, sb, ctx, indent);
                 }
-                sb.Append(") {\n");
-                EmitStatementBody(forStmt.Statement, sb, ctx, indent);
+                finally { ctx.PopLocalScope(); }
                 sb.Append(indent).Append("}\n");
                 break;
+            }
 
             case ForEachStatementSyntax feStmt:
-                sb.Append(indent).Append("for (const ").Append(feStmt.Identifier.Text).Append(" of ");
+            {
+                var iterVar = feStmt.Identifier.Text;
+                sb.Append(indent).Append("for (const ").Append(iterVar).Append(" of ");
                 ExpressionEmitter.Emit(feStmt.Expression, sb, ctx);
                 sb.Append(") {\n");
-                EmitStatementBody(feStmt.Statement, sb, ctx, indent);
+                ctx.PushLocalScope([iterVar]);
+                try { EmitStatementBody(feStmt.Statement, sb, ctx, indent); }
+                finally { ctx.PopLocalScope(); }
                 sb.Append(indent).Append("}\n");
                 break;
+            }
 
             default:
                 sb.Append(indent).Append("// TODO: unsupported statement '").Append(stmt.Kind()).Append("'\n");

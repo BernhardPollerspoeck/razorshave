@@ -169,7 +169,6 @@ function mountComponent(vnode, owner) {
   const instance = new Ctor();
   vnode._instance = instance;
   instance.props = vnode.props || {};
-  instance._childrenArg = vnode.children;
   instance._resolveInjects?.(Ctor);
   instance.onInit?.();
   kickoffAsyncInit(instance);
@@ -179,13 +178,8 @@ function mountComponent(vnode, owner) {
   instance._vtree = wrapped;
 
   // Wrap the subtree in comment markers so the component's DOM range is
-  // always identifiable, even when `render()` returned null. The markers
-  // let subsequent patches (null → content, reorder, unmount) work without
-  // needing to locate a "first child" that may not exist.
-  //
-  // Marker text carries the Component's class name — purely for DevTools
-  // readability. The runtime only ever uses the Node identity, so the text
-  // can be anything; naming helps when debugging deeply nested trees.
+  // always identifiable, even when `render()` returned null. Markers carry
+  // the class name for DevTools readability; runtime only uses node identity.
   const name = Ctor.name || 'Component';
   const frag = document.createDocumentFragment();
   vnode._startMarker = document.createComment(` rs:${name} `);
@@ -194,6 +188,13 @@ function mountComponent(vnode, owner) {
   const subDom = createDom(wrapped, instance);
   if (subDom) frag.appendChild(subDom);
   frag.appendChild(vnode._endMarker);
+
+  // Lifecycle parity with Root: every component sees onAfterRender(true) on
+  // mount. Fire bottom-up — our subtree's children have already mounted by
+  // the time we reach this line, so their onAfterRender already fired.
+  instance._hasRenderedBefore = true;
+  try { instance.onAfterRender?.(true); }
+  catch (err) { reportRuntimeError(err, { phase: 'onAfterRender', component: name }); }
   return frag;
 }
 
@@ -366,8 +367,15 @@ function patchComponent(oldVnode, newVnode, owner) {
   newVnode._startMarker = oldVnode._startMarker;
   newVnode._endMarker = oldVnode._endMarker;
   instance.props = newVnode.props || {};
-  instance._childrenArg = newVnode.children;
   instance.onPropsChanged?.();
+
+  // shouldRender gate — matches Blazor's ShouldRender(). When false we keep
+  // the previous subtree DOM + vtree untouched; only props + onPropsChanged
+  // have been applied, which matches how Blazor handles parameter-set
+  // followed by a render-skip.
+  if (instance.shouldRender?.() === false) {
+    return;
+  }
 
   const newSubtree = wrapTopLevel(instance.render?.());
   const oldSubtree = instance._vtree;
@@ -381,6 +389,11 @@ function patchComponent(oldVnode, newVnode, owner) {
     patchChildren(parent, oldList, newList, instance, newVnode._endMarker);
   }
   instance._vtree = newSubtree;
+
+  // Post-render hook fires on children just like Blazor. firstRender is
+  // false here — the component was already mounted on a previous pass.
+  try { instance.onAfterRender?.(false); }
+  catch (err) { reportRuntimeError(err, { phase: 'onAfterRender', component: newVnode.type?.name }); }
 }
 
 function patchChildren(parent, oldChildren, newChildren, owner, endAnchor) {
@@ -413,37 +426,69 @@ function patchPositional(parent, oldChildren, newChildren, owner, endAnchor) {
   }
 }
 
-// Keyed diff — walks new children back-to-front so each placed child sets
-// the anchor the previous one must sit before. Avoids the positional-cursor
-// hazard (where mid-loop DOM mutations made `parent.childNodes[cursor]`
-// point at the wrong sibling) and handles multi-root vnodes uniformly via
-// `collectDomRoots` / range-move.
+// Keyed diff — handles mixed keyed and unkeyed siblings uniformly.
+//
+// Parents often mix static elements with a keyed loop, e.g.
+//   <h2>Items</h2> @foreach(...) { <Item @key="item.Id" /> } <button>Add</button>
+// The `<h2>` and `<button>` have no `@key`; they live as siblings of the keyed
+// items in the same children list. Blazor, React and Vue all support this by
+// matching keyed children by key and matching unkeyed children positionally
+// against the next unmatched-unkeyed slot.
+//
+// Algorithm (two passes):
+//   1. Assignment: forward-walk new children, claim an old child for each:
+//      - keyed new → look up in key→old-index map
+//      - unkeyed new → take the next unclaimed unkeyed-old in source order
+//   2. Placement: backward-walk new children to compute anchors and move
+//      DOM ranges. Each placed child sets the anchor its predecessor must
+//      sit before. Unclaimed old children are removed at the end.
 function patchKeyed(parent, oldChildren, newChildren, owner, endAnchor) {
   const keyToOld = new Map();
+  const unkeyedOldIndices = [];
   for (let i = 0; i < oldChildren.length; i++) {
-    const k = oldChildren[i]?.key;
-    if (k != null) keyToOld.set(k, i);
+    const c = oldChildren[i];
+    if (c == null) continue;
+    if (c.key != null) keyToOld.set(c.key, i);
+    else unkeyedOldIndices.push(i);
   }
   const claimed = new Array(oldChildren.length).fill(false);
 
+  // Pass 1 — decide each new child's claim, forward order for positional
+  // unkeyed matching to be intuitive (first-unkeyed-new ↔ first-unkeyed-old).
+  const assignment = new Array(newChildren.length);
+  let unkeyedCursor = 0;
+  for (let i = 0; i < newChildren.length; i++) {
+    const newChild = newChildren[i];
+    const newKey = newChild?.key;
+    if (newKey != null) {
+      const oldIdx = keyToOld.get(newKey);
+      if (oldIdx != null && !claimed[oldIdx]) {
+        claimed[oldIdx] = true;
+        assignment[i] = oldIdx;
+      }
+    } else {
+      while (unkeyedCursor < unkeyedOldIndices.length) {
+        const candidate = unkeyedOldIndices[unkeyedCursor++];
+        if (!claimed[candidate]) {
+          claimed[candidate] = true;
+          assignment[i] = candidate;
+          break;
+        }
+      }
+    }
+  }
+
+  // Pass 2 — backward walk to place DOM ranges before the running anchor.
   let anchor = endAnchor;
   for (let i = newChildren.length - 1; i >= 0; i--) {
     const newChild = newChildren[i];
-    const newKey = newChild?.key;
-    const oldIdx = newKey != null ? keyToOld.get(newKey) : undefined;
-
-    if (oldIdx != null && !claimed[oldIdx]) {
-      claimed[oldIdx] = true;
+    const oldIdx = assignment[i];
+    if (oldIdx != null) {
       patchNode(parent, oldChildren[oldIdx], newChild, owner, anchor);
     } else {
       const node = createDom(newChild, owner);
       if (node) parent.insertBefore(node, anchor);
     }
-
-    // Ensure the child's full DOM range sits immediately before the anchor.
-    // For a same-Ctor component with a fragment body the range is bracketed
-    // by its markers and moves as a unit; for markup every _markupNode moves;
-    // for element/text the single node moves.
     moveRangeBefore(parent, newChild, anchor);
     anchor = firstDom(newChild) ?? anchor;
   }

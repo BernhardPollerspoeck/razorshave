@@ -238,6 +238,47 @@ describe('Component null → content transitions', () => {
   });
 });
 
+describe('Mixed keyed + unkeyed siblings in same parent', () => {
+  it('static wrappers survive when the keyed loop between them mutates', async () => {
+    // Idiomatic Blazor pattern: static header + keyed loop + static footer.
+    // The old reconciler switched to keyed-mode as soon as any child had a
+    // key and misclassified the unkeyed wrappers as "missing" on each
+    // render, remounting them and losing their state.
+    class Item extends Component {
+      render() { return h('li', null, this.props.label); }
+    }
+    class List extends Component {
+      constructor() { super(); this.ids = ['a', 'b', 'c']; }
+      drop(id) { this.ids = this.ids.filter(x => x !== id); this.stateHasChanged(); }
+      render() {
+        return h('div', null,
+          h('h2', null, 'Items'),
+          ...this.ids.map(id => h(Item, { key: id, label: id })),
+          h('button', null, 'Add')
+        );
+      }
+    }
+    const c = document.createElement('div');
+    const list = mount(List, c);
+
+    const h2Before = c.querySelector('h2');
+    const buttonBefore = c.querySelector('button');
+    list.drop('b');
+    await nextFrame();
+
+    // Wrappers keep their DOM identity (positional unkeyed match).
+    expect(c.querySelector('h2')).toBe(h2Before);
+    expect(c.querySelector('button')).toBe(buttonBefore);
+    // Keyed loop resolves the delete correctly.
+    expect(Array.from(c.querySelectorAll('li')).map(l => l.textContent))
+      .toEqual(['a', 'c']);
+    // Structural order is still header → items → footer.
+    const kids = Array.from(c.firstChild.children);
+    expect(kids[0].tagName).toBe('H2');
+    expect(kids[kids.length - 1].tagName).toBe('BUTTON');
+  });
+});
+
 describe('Keyed reorder with multi-root component fragments', () => {
   it('reordering a component that renders a fragment moves all its DOM together', async () => {
     // Regression for vdom.js patchKeyed: before the comment-marker range
@@ -271,6 +312,92 @@ describe('Keyed reorder with multi-root component fragments', () => {
     // After swap: y-a, y-b, x-a, x-b — both of each pair stay adjacent.
     const after = Array.from(c.querySelectorAll('span')).map(s => s.textContent);
     expect(after).toEqual(['y-a', 'y-b', 'x-a', 'x-b']);
+  });
+});
+
+describe('Lifecycle parity: child components fire onAfterRender + shouldRender', () => {
+  it('child component sees onAfterRender(true) on first mount', async () => {
+    const calls = [];
+    class Leaf extends Component {
+      onAfterRender(firstRender) { calls.push(firstRender); }
+      render() { return h('span', null, 'leaf'); }
+    }
+    class Parent extends Component {
+      render() { return h('div', null, h(Leaf, {})); }
+    }
+    const c = document.createElement('div');
+    mount(Parent, c);
+    expect(calls).toEqual([true]);
+  });
+
+  it('child component sees onAfterRender(false) on subsequent patches', async () => {
+    const calls = [];
+    class Leaf extends Component {
+      onAfterRender(firstRender) { calls.push(firstRender); }
+      render() { return h('span', null, this.props.label); }
+    }
+    class Parent extends Component {
+      constructor() { super(); this.label = 'a'; }
+      change() { this.label = 'b'; this.stateHasChanged(); }
+      render() { return h('div', null, h(Leaf, { label: this.label })); }
+    }
+    const c = document.createElement('div');
+    const parent = mount(Parent, c);
+    expect(calls).toEqual([true]);
+
+    parent.change();
+    await nextFrame();
+    expect(calls).toEqual([true, false]);
+  });
+
+  it('child shouldRender() === false skips its render and onAfterRender', async () => {
+    let renders = 0;
+    let afterCalls = 0;
+    class Leaf extends Component {
+      shouldRender() { return false; }
+      render() { renders++; return h('span', null, 'x'); }
+      onAfterRender() { afterCalls++; }
+    }
+    class Parent extends Component {
+      constructor() { super(); this.n = 0; }
+      bump() { this.n++; this.stateHasChanged(); }
+      render() { return h('div', null, h(Leaf, { n: this.n })); }
+    }
+    const c = document.createElement('div');
+    const parent = mount(Parent, c);
+
+    // First mount happens before shouldRender is consulted (that's the
+    // initial render). After mount, renders=1, afterCalls=1.
+    expect(renders).toBe(1);
+    expect(afterCalls).toBe(1);
+
+    parent.bump();
+    await nextFrame();
+    // Second pass: shouldRender returns false → leaf's render + onAfterRender
+    // skipped. Leaf still received the props and onPropsChanged fired, but
+    // its subtree wasn't touched.
+    expect(renders).toBe(1);
+    expect(afterCalls).toBe(1);
+  });
+
+  it('onAfterRender firing order is bottom-up (deepest child first)', () => {
+    const events = [];
+    class Leaf extends Component {
+      onAfterRender() { events.push('leaf'); }
+      render() { return h('span', null, 'x'); }
+    }
+    class Middle extends Component {
+      onAfterRender() { events.push('middle'); }
+      render() { return h('div', null, h(Leaf, {})); }
+    }
+    class Root extends Component {
+      onAfterRender() { events.push('root'); }
+      render() { return h('section', null, h(Middle, {})); }
+    }
+    const c = document.createElement('div');
+    mount(Root, c);
+
+    expect(events).toEqual(['leaf', 'middle', 'root']);
   });
 });
 

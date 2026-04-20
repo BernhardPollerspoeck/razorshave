@@ -20,4 +20,33 @@ internal sealed class EmitContext
     public required IReadOnlySet<string> ClassMembers { get; init; }
 
     public required SemanticModel Model { get; init; }
+
+    // Stack of local-scope names that currently shadow class members.
+    // Lambda parameters, `for`-loop variables and primary-constructor
+    // parameters (inside the ctor body) all push a frame here so the
+    // identifier-rewrite logic in ExpressionEmitter can skip the
+    // `this.X` rewrite for names bound locally.
+    //
+    // Empty at class-body scope. Frames are popped in reverse order by
+    // the emitter that pushed them.
+    private readonly Stack<IReadOnlyCollection<string>> _localScopes = new();
+
+    public void PushLocalScope(IReadOnlyCollection<string> names) => _localScopes.Push(names);
+
+    public void PopLocalScope() => _localScopes.Pop();
+
+    /// <summary>
+    /// True when <paramref name="name"/> is shadowed by a local binding in
+    /// any enclosing scope — a lambda parameter, a for-loop variable, or
+    /// the primary-constructor's parameter list (before the `this.X = X`
+    /// assignments have run).
+    /// </summary>
+    public bool IsLocallyShadowed(string name)
+    {
+        foreach (var frame in _localScopes)
+        {
+            if (frame.Contains(name)) return true;
+        }
+        return false;
+    }
 }

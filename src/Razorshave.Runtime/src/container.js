@@ -64,6 +64,13 @@ export class Container {
     throw new Error(`Razorshave: service '${key}' is not registered.`);
   }
 
+  // Returns the resolved service, or `undefined` if nothing matches — no
+  // throw. Use when a service is optional (feature flags, debug sinks,
+  // telemetry); avoids the two-call `has(k) ? resolve(k) : null` TOCTOU.
+  tryResolve(key) {
+    return this.has(key) ? this.resolve(key) : undefined;
+  }
+
   has(key) {
     if (this._factories.has(key) || this._singletons.has(key)) return true;
     return this._autoFactories.some(a => a.test(key));

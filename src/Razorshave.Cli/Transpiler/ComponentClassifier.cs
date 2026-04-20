@@ -25,7 +25,7 @@ internal static class ComponentClassifier
         {
             foreach (var attr in attrList.Attributes)
             {
-                var simple = StripQualifiers(attr.Name.ToString());
+                var simple = NameConventions.StripQualifiers(attr.Name.ToString());
                 if (simple is "Client" or "ClientAttribute") return true;
             }
         }
@@ -55,10 +55,8 @@ internal static class ComponentClassifier
         var first = true;
         foreach (var baseType in node.BaseList.Types)
         {
-            var name = StripQualifiers(baseType.Type.ToString());
-            // Drop generic parameters: `IEnumerable<T>` → `IEnumerable`.
-            var gen = name.IndexOf('<');
-            if (gen >= 0) name = name[..gen];
+            var name = NameConventions.StripGenerics(
+                NameConventions.StripQualifiers(baseType.Type.ToString()));
 
             if (first && (name.Length == 0 || name[0] != 'I' || name.Length < 2 || !char.IsUpper(name[1])))
             {
@@ -74,11 +72,6 @@ internal static class ComponentClassifier
         }
     }
 
-    private static string StripQualifiers(string qualified)
-    {
-        var lastDot = qualified.LastIndexOf('.');
-        return lastDot < 0 ? qualified : qualified[(lastDot + 1)..];
-    }
 
     /// <summary>
     /// Returns the simple name of the first base type on <paramref name="node"/>,
@@ -91,9 +84,6 @@ internal static class ComponentClassifier
         {
             return null;
         }
-
-        var first = node.BaseList.Types[0].Type.ToString();
-        var lastDot = first.LastIndexOf('.');
-        return lastDot < 0 ? first : first[(lastDot + 1)..];
+        return NameConventions.StripQualifiers(node.BaseList.Types[0].Type.ToString());
     }
 }

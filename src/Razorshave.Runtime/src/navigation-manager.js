@@ -29,6 +29,9 @@ class NavigationManager {
     this._emit(path);
   }
 
+  // Listener set is snapshotted before dispatch in `_emit` — same semantics
+  // as `Store.onChange`: subscribing during dispatch does NOT see the current
+  // event, only subsequent ones; unsubscribing during dispatch is safe.
   onLocationChanged(handler) {
     this._listeners.add(handler);
     return () => this._listeners.delete(handler);

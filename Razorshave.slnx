@@ -8,6 +8,7 @@
     <Project Path="src/Razorshave.Cli/Razorshave.Cli.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Razorshave.Abstractions.Tests/Razorshave.Abstractions.Tests.csproj" />
     <Project Path="tests/Razorshave.Analyzer.Tests/Razorshave.Analyzer.Tests.csproj" />
     <Project Path="tests/Razorshave.SourceGenerator.Tests/Razorshave.SourceGenerator.Tests.csproj" />
     <Project Path="tests/Razorshave.Transpiler.Tests/Razorshave.Transpiler.Tests.csproj" />
