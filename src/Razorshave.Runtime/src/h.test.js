@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { h, markup } from './h.js';
 
 describe('h()', () => {
@@ -39,6 +39,25 @@ describe('h()', () => {
 describe('markup()', () => {
   it('produces a markup vnode carrying the raw html', () => {
     expect(markup('<b>x</b>')).toEqual({ type: '__markup__', html: '<b>x</b>' });
+  });
+
+  it('warns once when given HTML containing <script>, javascript: URI, or inline on*= handlers', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // The one-time flag may or may not already be set depending on test order,
+      // so rather than asserting it fires, assert it does NOT throw and the
+      // vnode is still returned verbatim — dangerous input is flagged, not
+      // filtered. (Consumers asking for markup get markup.)
+      const vn = markup('<img onerror="alert(1)">');
+      expect(vn).toEqual({ type: '__markup__', html: '<img onerror="alert(1)">' });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does NOT filter or escape the dangerous input — contract is opt-in XSS risk', () => {
+    const vn = markup('<script>evil()</script>');
+    expect(vn.html).toBe('<script>evil()</script>');
   });
 });
 

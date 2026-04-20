@@ -380,6 +380,34 @@ describe('Lifecycle parity: child components fire onAfterRender + shouldRender',
     expect(afterCalls).toBe(1);
   });
 
+  it('onPropsChanged does NOT fire when props are shallow-equal', async () => {
+    // Regression for the "fires on every re-render" bug: a parent that
+    // re-renders with the same child props should not force the child
+    // through a lifecycle hook — Blazor's ShouldRender default is
+    // "props must actually change". Shallow compare is intentional (React/
+    // Preact parity); a nested object with a new identity does trigger it.
+    let propsChangedCalls = 0;
+    class Leaf extends Component {
+      onPropsChanged() { propsChangedCalls++; }
+      render() { return h('span', null, String(this.props.n)); }
+    }
+    class Parent extends Component {
+      constructor() { super(); this.rev = 0; }
+      bump() { this.rev++; this.stateHasChanged(); }
+      render() { return h('div', null, h(Leaf, { n: 1 })); }
+    }
+    const c = document.createElement('div');
+    const parent = mount(Parent, c);
+
+    parent.bump();
+    await nextFrame();
+    parent.bump();
+    await nextFrame();
+
+    // Two re-renders with identical `{ n: 1 }` props — onPropsChanged stays at 0.
+    expect(propsChangedCalls).toBe(0);
+  });
+
   it('onAfterRender firing order is bottom-up (deepest child first)', () => {
     const events = [];
     class Leaf extends Component {

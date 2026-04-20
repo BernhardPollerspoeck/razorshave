@@ -27,3 +27,36 @@ export function _isNullOrWhiteSpace(value) {
 export function _isNullOrEmpty(value) {
   return value == null || value === '';
 }
+
+// `Guid.NewGuid()` — `crypto.randomUUID()` is the right answer, but it throws
+// in non-secure contexts (http://, file://, some srcdoc iframes). Blazor apps
+// are commonly bootstrapped from `dotnet run` on http://localhost, so the
+// secure-context guarantee isn't available across our whole usage surface.
+// Prefer the real thing, fall back to a Math.random-based UUIDv4 and warn
+// once so the degraded entropy isn't silent. The fallback is NOT cryptographic
+// and must not be used for security-sensitive identifiers — but for UI keys
+// and client-generated record IDs it matches the C# Guid contract (unique
+// enough, valid v4 shape).
+let _warnedGuidFallback = false;
+export function _newGuid() {
+  const c = typeof crypto !== 'undefined' ? crypto : null;
+  if (c && typeof c.randomUUID === 'function') {
+    try { return c.randomUUID(); } catch { /* secure-context failure — fall through */ }
+  }
+  if (!_warnedGuidFallback) {
+    _warnedGuidFallback = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[razorshave] crypto.randomUUID() unavailable (non-secure context?). '
+      + 'Falling back to Math.random-based UUIDv4 — valid shape, weak entropy. '
+      + 'Do not use for security-sensitive identifiers.'
+    );
+  }
+  // RFC 4122 v4 shape, Math.random digits. Good enough for UI keys, not for
+  // anything that must be unguessable.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+    const r = Math.random() * 16 | 0;
+    const v = ch === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}

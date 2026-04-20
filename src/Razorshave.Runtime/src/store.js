@@ -102,9 +102,25 @@ export class Store {
   }
 
   _emitChange() {
-    // Snapshot the listener set — handlers may unsubscribe during dispatch.
-    for (const listener of Array.from(this._listeners)) {
-      listener();
+    // A listener is allowed to mutate the store (common pattern: derived
+    // values). Unbounded recursion, however, turns into a silent stack-
+    // exhaustion crash — guard with a small depth counter that throws with
+    // a named diagnostic once the chain exceeds a sane limit.
+    this._emitDepth = (this._emitDepth ?? 0) + 1;
+    try {
+      if (this._emitDepth > 8) {
+        throw new Error(
+          '[razorshave] Store onChange recursion exceeded 8 levels — a listener '
+          + 'is mutating the store inside its own notification chain. Guard the mutation '
+          + 'behind an equality check or move it into Store.batch().'
+        );
+      }
+      // Snapshot the listener set — handlers may unsubscribe during dispatch.
+      for (const listener of Array.from(this._listeners)) {
+        listener();
+      }
+    } finally {
+      this._emitDepth--;
     }
   }
 }

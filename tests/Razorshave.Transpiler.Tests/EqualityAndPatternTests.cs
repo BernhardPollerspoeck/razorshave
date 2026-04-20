@@ -98,4 +98,35 @@ public sealed class EqualityAndPatternTests
         var js = Transpile(source);
         Assert.Contains("this.label != null", js);
     }
+
+    [Fact]
+    public void Multiple_Client_classes_in_one_file_each_transpile_individually()
+    {
+        // Regression: BuildCommand used FirstOrDefault, so declaring two
+        // [Client] services in one file silently dropped the second. The new
+        // loop hits every class; we verify by transpiling each explicitly
+        // here (BuildCommand's loop walks the file-level; the per-class
+        // transpile is what it ultimately calls).
+        var source = """
+            using global::Microsoft.AspNetCore.Components;
+            namespace Fixtures;
+            [Client] public class ServiceA { public void Ping() { } }
+            [Client] public class ServiceB { public void Pong() { } }
+            """;
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(source);
+        var classes = tree.GetRoot().DescendantNodes()
+            .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ClassDeclarationSyntax>()
+            .ToList();
+        Assert.Equal(2, classes.Count);
+
+        var jsA = TranspileClientClass(tree, classes[0]);
+        var jsB = TranspileClientClass(tree, classes[1]);
+
+        // Each transpile should emit exactly its own class, not the sibling.
+        Assert.Contains("class ServiceA", jsA);
+        Assert.DoesNotContain("class ServiceB", jsA);
+
+        Assert.Contains("class ServiceB", jsB);
+        Assert.DoesNotContain("class ServiceA", jsB);
+    }
 }

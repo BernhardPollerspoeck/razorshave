@@ -196,20 +196,29 @@ internal static class BuildCommand
             // old path parsed the same file a second time inside
             // TranspileClientClass, doubling the work per [Client] class.
             var tree = CSharpSyntaxTree.ParseText(source);
-            var cls = tree.GetRoot().DescendantNodes()
+            var matches = tree.GetRoot().DescendantNodes()
                 .OfType<ClassDeclarationSyntax>()
-                .FirstOrDefault(Razorshave.Cli.Transpiler.ComponentClassifier.IsClientClass);
-            if (cls is null) continue;
+                .Where(Razorshave.Cli.Transpiler.ComponentClassifier.IsClientClass)
+                .ToList();
+            if (matches.Count == 0) continue;
 
-            var js = Razorshave.Cli.Transpiler.Transpiler.TranspileClientClass(tree, references, globalUsings);
-            if (string.IsNullOrWhiteSpace(js)) continue;
+            // Loop per matching class — a file that declares more than one
+            // [Client] used to silently drop the extras (FirstOrDefault), so
+            // two services in the same file meant the second one never reached
+            // the bundle. Each class gets its own dist/<Name>.js and its own
+            // interface-key list so DI-auto-registration sees all of them.
+            foreach (var cls in matches)
+            {
+                var js = Razorshave.Cli.Transpiler.Transpiler.TranspileClientClass(tree, cls, references, globalUsings);
+                if (string.IsNullOrWhiteSpace(js)) continue;
 
-            var name = cls.Identifier.Text;
-            var outFile = Path.Combine(distDir, $"{name}.js");
-            File.WriteAllText(outFile, js);
+                var name = cls.Identifier.Text;
+                var outFile = Path.Combine(distDir, $"{name}.js");
+                File.WriteAllText(outFile, js);
 
-            var interfaces = Razorshave.Cli.Transpiler.ComponentClassifier.EnumerateInterfaces(cls).ToArray();
-            clients.Add(new TranspiledClient(name, outFile, interfaces));
+                var interfaces = Razorshave.Cli.Transpiler.ComponentClassifier.EnumerateInterfaces(cls).ToArray();
+                clients.Add(new TranspiledClient(name, outFile, interfaces));
+            }
         }
         return clients;
     }
@@ -282,28 +291,38 @@ internal static class BuildCommand
         {
             var source = File.ReadAllText(genFile);
             var tree = CSharpSyntaxTree.ParseText(source);
-            var componentCls = FindComponentClass(tree);
-            if (componentCls is null) continue;
+            var componentClasses = tree.GetRoot().DescendantNodes()
+                .OfType<ClassDeclarationSyntax>()
+                .Where(IsComponentSubclass)
+                .ToList();
+            if (componentClasses.Count == 0) continue;
 
-            var className = componentCls.Identifier.Text;
-
-            // Routes.razor is not transpiled — its role (hosting Blazor's
-            // Router) is replaced by the runtime Router we wire up in main.js.
-            // We do peek at it for DefaultLayout / NotFoundPage metadata.
-            if (className == "Routes")
+            // Loop per component class — a single file with more than one
+            // Component (rare, but legal via code-behind) would otherwise lose
+            // everything past the first. Each class gets its own dist/<Name>.js
+            // and its own route entry so the router picks every page up.
+            foreach (var componentCls in componentClasses)
             {
-                routesConfig = RouteExtractor.ExtractRoutesConfig(tree);
-                continue;
+                var className = componentCls.Identifier.Text;
+
+                // Routes.razor is not transpiled — its role (hosting Blazor's
+                // Router) is replaced by the runtime Router we wire up in main.js.
+                // We do peek at it for DefaultLayout / NotFoundPage metadata.
+                if (className == "Routes")
+                {
+                    routesConfig = RouteExtractor.ExtractRoutesConfig(tree);
+                    continue;
+                }
+
+                var js = Transpile(tree, componentCls, references, globalUsings);
+                if (string.IsNullOrWhiteSpace(js)) continue;
+
+                var outFile = Path.Combine(distDir, $"{className}.js");
+                File.WriteAllText(outFile, js);
+
+                var patterns = RouteExtractor.ExtractRoutePatterns(componentCls);
+                components.Add(new TranspiledComponent(className, outFile, patterns));
             }
-
-            var js = Transpile(source, references, globalUsings);
-            if (string.IsNullOrWhiteSpace(js)) continue;
-
-            var outFile = Path.Combine(distDir, $"{className}.js");
-            File.WriteAllText(outFile, js);
-
-            var patterns = RouteExtractor.ExtractRoutePatterns(componentCls);
-            components.Add(new TranspiledComponent(className, outFile, patterns));
         }
 
         return (

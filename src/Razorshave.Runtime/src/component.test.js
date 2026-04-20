@@ -129,3 +129,31 @@ describe('LayoutComponent', () => {
     expect(layout.body).toBe('x');
   });
 });
+
+describe('_bound cache invalidation', () => {
+  it('returns the same reference when the source method is unchanged', () => {
+    class C extends Component {
+      HandleClick() { }
+    }
+    const inst = new C();
+    expect(inst._bound('HandleClick')).toBe(inst._bound('HandleClick'));
+  });
+
+  it('returns a FRESH reference when the user reassigns the source method', () => {
+    // Regression for the stale-binding bug: `this.Handler = newFn` used to
+    // keep the old binding in the cache forever. Second bind must reflect
+    // the reassignment so event sources fire the new handler.
+    class C extends Component {
+      HandleClick() { return 'old'; }
+    }
+    const inst = new C();
+    const first = inst._bound('HandleClick');
+    expect(first()).toBe('old');
+
+    inst.HandleClick = function () { return 'new'; };
+    const second = inst._bound('HandleClick');
+    expect(second).not.toBe(first);
+    expect(second()).toBe('new');
+  });
+});
+

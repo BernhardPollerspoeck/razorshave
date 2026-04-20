@@ -13,6 +13,7 @@ public sealed class InMemoryStore<T> : IStore<T>
     private readonly ConcurrentDictionary<string, T> _data = new();
     private int _batchDepth;
     private int _batchDirty; // 0 = clean, 1 = dirty (atomic-compatible int)
+    private int _emitDepth;  // re-entry guard: listener may mutate, but not unboundedly
 
     /// <inheritdoc />
     public T? Get(string key) => _data.TryGetValue(key, out var value) ? value : default;
@@ -96,5 +97,27 @@ public sealed class InMemoryStore<T> : IStore<T>
         EmitChange();
     }
 
-    private void EmitChange() => OnChange?.Invoke();
+    // A listener is allowed to mutate the store (common pattern: derived
+    // values). Unbounded recursion, however, turns into a silent stack-
+    // exhaustion crash — guard with a small depth counter that throws with
+    // a named diagnostic once the chain exceeds a sane limit.
+    private void EmitChange()
+    {
+        var depth = Interlocked.Increment(ref _emitDepth);
+        try
+        {
+            if (depth > 8)
+            {
+                throw new InvalidOperationException(
+                    "Store OnChange recursion exceeded 8 levels — a listener is mutating "
+                    + "the store inside its own notification chain. Guard the mutation "
+                    + "behind an equality check or wrap it in Batch().");
+            }
+            OnChange?.Invoke();
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _emitDepth);
+        }
+    }
 }

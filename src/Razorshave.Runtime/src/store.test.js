@@ -135,4 +135,27 @@ describe('Store', () => {
     expect(a).toHaveBeenCalledOnce();
     expect(b).toHaveBeenCalledOnce();
   });
+
+  it('throws a named diagnostic when onChange recursion exceeds 8 levels', () => {
+    // Circular mutation: the listener always mutates, no equality guard.
+    // Blazor / C# Store both have the same throw-with-diagnostic behaviour;
+    // silent stack exhaustion would just produce "Maximum call stack size
+    // exceeded" from somewhere deep in the reconciler.
+    const s = new Store();
+    s.onChange(() => s.set('x', Math.random()));
+    expect(() => s.set('x', 0)).toThrow(/Store onChange recursion exceeded 8 levels/);
+  });
+
+  it('allows a one-shot listener mutation below the recursion threshold', () => {
+    const s = new Store();
+    let fired = false;
+    s.onChange(() => {
+      if (!fired) {
+        fired = true;
+        s.set('derived', 'computed');
+      }
+    });
+    s.set('x', 1);
+    expect(s.get('derived')).toBe('computed');
+  });
 });

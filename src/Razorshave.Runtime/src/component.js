@@ -97,12 +97,22 @@ export class Component {
   // unsubscribe silently misses and the listener leaks. Caching by method
   // name guarantees the same bound fn every call.
   _bound(name) {
-    if (!this._boundCache) this._boundCache = Object.create(null);
-    const cached = this._boundCache[name];
-    if (cached) return cached;
+    if (!this._boundCache) {
+      this._boundCache = Object.create(null);
+      this._boundSources = Object.create(null);
+    }
     const fn = this[name];
     if (typeof fn !== 'function') return undefined;
-    return this._boundCache[name] = fn.bind(this);
+    // Return a fresh binding when the source reference changed. User code
+    // that overwrites `this.Handler = newFn` must observe the new handler
+    // on the next `_bound("Handler")` call — a stale cached binding would
+    // silently dispatch the old function forever. Cache-source comparison
+    // is an object-identity check so it's O(1).
+    if (this._boundSources[name] !== fn) {
+      this._boundSources[name] = fn;
+      this._boundCache[name] = fn.bind(this);
+    }
+    return this._boundCache[name];
   }
 
   // Resolves the `_injects` manifest (emitted by ClassEmitter for every
@@ -144,16 +154,51 @@ export class Component {
   _rerender() {
     if (!this._container) return;
 
+    _trackRerenderBurst(this);
+
     const newVtree = this.render?.() ?? null;
+    // Store the NORMALISED list (with _dom refs on text-vnodes) that
+    // mountRoot/patchRoot returns — storing raw render output here would
+    // lose DOM identity on transitions like string → element (the old
+    // text DOM would linger next to the new element because the re-
+    // normalised text-vnode has no _dom to remove).
     if (!this._hasRenderedBefore) {
-      mountRoot(this._container, newVtree, this);
+      this._vtree = mountRoot(this._container, newVtree, this);
     } else {
-      patchRoot(this._container, this._vtree, newVtree, this);
+      this._vtree = patchRoot(this._container, this._vtree, newVtree, this);
     }
-    this._vtree = newVtree;
 
     this.onAfterRender(!this._hasRenderedBefore);
     this._hasRenderedBefore = true;
+  }
+}
+
+// Detects a `render()` → `stateHasChanged` → rerender tight loop: if a root
+// keeps re-rendering rapidly without any user-driven idle gap, log a one-time
+// dev warning so the guilty render path shows up in the console instead of
+// silently pegging the CPU. Threshold is tuned loose enough (25 rerenders
+// inside 250ms) that a real animation loop — which should be driven from
+// rAF, not render — does trigger it, but an interactive burst from user
+// input (click, keystroke) stays under it.
+let _warnedRenderLoop = false;
+function _trackRerenderBurst(inst) {
+  const now = typeof performance !== 'undefined' && performance.now
+    ? performance.now()
+    : Date.now();
+  if (inst._renderBurstStart === undefined || now - inst._renderBurstStart > 250) {
+    inst._renderBurstStart = now;
+    inst._renderBurstCount = 1;
+    return;
+  }
+  inst._renderBurstCount++;
+  if (inst._renderBurstCount > 25 && !_warnedRenderLoop) {
+    _warnedRenderLoop = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[razorshave] Component ${inst.constructor?.name ?? '<anonymous>'} rerendered ${inst._renderBurstCount} times in ${Math.round(now - inst._renderBurstStart)}ms. `
+      + 'This usually means render() or onAfterRender() calls stateHasChanged() directly. '
+      + 'Move side effects out of the render path or gate the update behind an equality check.'
+    );
   }
 }
 
@@ -170,15 +215,20 @@ export function kickoffAsyncInit(instance) {
     p = instance.onInitializedAsync?.();
   } catch (err) {
     reportRuntimeError(err, { phase: 'onInitializedAsync', component: instance.constructor?.name });
-    instance.stateHasChanged?.();
+    if (!instance._destroyed) instance.stateHasChanged?.();
     return;
   }
   if (p && typeof p.then === 'function') {
+    // Unmount can fire between `onInitializedAsync()` being invoked and the
+    // promise resolving. Without the `_destroyed` guard, stateHasChanged
+    // would schedule a render on a detached instance and hit a null-host in
+    // the reconciler. Skip the bubble quietly — the user explicitly tore
+    // the component down.
     p.then(
-      () => instance.stateHasChanged?.(),
+      () => { if (!instance._destroyed) instance.stateHasChanged?.(); },
       (err) => {
         reportRuntimeError(err, { phase: 'onInitializedAsync', component: instance.constructor?.name });
-        instance.stateHasChanged?.();
+        if (!instance._destroyed) instance.stateHasChanged?.();
       }
     );
   }

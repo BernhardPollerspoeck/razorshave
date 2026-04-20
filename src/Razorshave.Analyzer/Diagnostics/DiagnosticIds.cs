@@ -17,5 +17,12 @@ internal static class DiagnosticIds
     public const string UnsupportedExpression = "RZS2001";
     public const string UnsupportedStatement = "RZS2002";
 
-    // 3xxx — component / render-tree issues (reserved)
+    // 3xxx — component / render-tree issues
+    //
+    // RZS3001: user-declared component name shadows a runtime-provided one
+    // (NavLink, Router, PageTitle). The HeaderEmitter filters known runtime
+    // components from user-import lines, so without this diagnostic the
+    // user's custom <NavLink> would silently resolve to the runtime NavLink
+    // instead of their own class.
+    public const string RuntimeComponentShadow = "RZS3001";
 }

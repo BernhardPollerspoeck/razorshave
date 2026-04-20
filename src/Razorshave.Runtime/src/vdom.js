@@ -76,6 +76,18 @@ function isVoid(v) {
   return v == null || v === false || v === true;
 }
 
+// Shallow-equals for component props. Identical objects short-circuit;
+// otherwise compare every key's reference (no deep walk — cheap and matches
+// React/Preact semantics).
+function shallowPropsEqual(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) if (a[k] !== b[k]) return false;
+  return true;
+}
+
 // --- public API ---
 
 // Create DOM for a fresh vnode tree. First mount path + one-shot helper used
@@ -86,23 +98,28 @@ export function render(vnode, owner) {
 
 // Diff `oldVtree` against `newVtree` inside `container`, patching DOM in
 // place. Fires onDestroy on components that leave the tree. Returns the
-// normalised new tree so the caller can store it for the next patch.
+// normalised vnode list the reconciler actually worked on — the caller must
+// store this (not the raw render output) so the next patch's oldVtree has
+// `_dom` references on every text-vnode. Previously we returned `newVtree`
+// verbatim, which for raw strings was a dead `'text'` value that re-wrapped
+// into a zero-`_dom` vnode on the next patch, causing the old DOM to linger
+// and accumulate on every render.
 export function patchRoot(container, oldVtree, newVtree, owner) {
   const oldList = asList(oldVtree);
   const newList = asList(newVtree);
   patchChildren(container, oldList, newList, owner, /* endAnchor */ null);
-  return newVtree;
+  return newList;
 }
 
 // Mount a fresh vnode tree inside `container`, appending the resulting DOM.
-// Returns the normalised tree for future patches.
+// Returns the normalised vnode list (same contract as patchRoot).
 export function mountRoot(container, vtree, owner) {
   const list = asList(vtree);
   for (const v of list) {
     const dom = createDom(v, owner);
     if (dom) container.appendChild(dom);
   }
-  return vtree;
+  return list;
 }
 
 function asList(vtree) {
@@ -377,8 +394,17 @@ function patchComponent(oldVnode, newVnode, owner) {
   // Markers carry over to the new vnode — same DOM position, same identity.
   newVnode._startMarker = oldVnode._startMarker;
   newVnode._endMarker = oldVnode._endMarker;
-  instance.props = newVnode.props || {};
-  instance.onPropsChanged?.();
+  const prevProps = instance.props;
+  const nextProps = newVnode.props || {};
+  instance.props = nextProps;
+  // Only fire onPropsChanged when props actually changed — a parent
+  // re-render with unchanged props should not force children into an
+  // update cycle. Shallow-equals matches Blazor's `ShouldRender` default
+  // and avoids the hidden-dependency of "parent rerenders → every child
+  // gets a lifecycle hook". Reference-equal shortcut keeps the hot path free.
+  if (prevProps !== nextProps && !shallowPropsEqual(prevProps, nextProps)) {
+    instance.onPropsChanged?.();
+  }
 
   // shouldRender gate — matches Blazor's ShouldRender(). When false we keep
   // the previous subtree DOM + vtree untouched; only props + onPropsChanged

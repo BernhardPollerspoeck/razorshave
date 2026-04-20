@@ -74,6 +74,16 @@ internal static class SupportedSyntax
             SyntaxKind.SimpleMemberAccessExpression,
             SyntaxKind.InvocationExpression,
             SyntaxKind.ElementAccessExpression,
+            SyntaxKind.ConditionalAccessExpression,  // `a?.b.c`
+            SyntaxKind.MemberBindingExpression,      // `.b` inside `a?.b`
+            SyntaxKind.ElementBindingExpression,     // `[i]` inside `a?[i]`
+            SyntaxKind.CoalesceAssignmentExpression, // `a ??= b`
+            // type/default/nameof — all land in ExpressionEmitter with the
+            // documented approximation (typeof → string literal, default(T)
+            // → null, nameof → simple-name string). Allowlist keeps them
+            // from double-flagging inside IsPattern/SwitchExpression walks.
+            SyntaxKind.TypeOfExpression,
+            SyntaxKind.DefaultExpression,
             // control
             SyntaxKind.ConditionalExpression,            // ternary
             SyntaxKind.ParenthesizedExpression,

@@ -27,8 +27,15 @@ internal static class ExpressionEmitter
                 // C# string literals (including verbatim @"…" with embedded
                 // newlines) must be re-emitted as valid JS strings. Non-string
                 // literals (int, bool, null, float) preserve their source
-                // representation verbatim.
-                if (lit.Token.Value is string s)
+                // representation verbatim. The bare `default` keyword is its
+                // own LiteralExpression kind — it has no JS counterpart, but
+                // "kein Wert" → `null` matches C#-reference-type default and
+                // is the right fallback for value-types bound to nullable JS.
+                if (lit.IsKind(SyntaxKind.DefaultLiteralExpression))
+                {
+                    sb.Append("null");
+                }
+                else if (lit.Token.Value is string s)
                 {
                     sb.Append(EncodeJsString(s));
                 }
@@ -86,6 +93,55 @@ internal static class ExpressionEmitter
                 EmitIsPattern(isPat, sb, ctx);
                 break;
 
+            case ConditionalAccessExpressionSyntax cond:
+                // `a?.b.c` → `a?.b.c`. JS's optional-chaining `?.` matches
+                // C#'s null-propagation: short-circuit to undefined when the
+                // receiver is null. The `?` prefix is emitted here; the
+                // MemberBinding / ElementBinding inside WhenNotNull supplies
+                // the `.b` / `[i]` continuation via their own cases below.
+                Emit(cond.Expression, sb, ctx);
+                sb.Append('?');
+                Emit(cond.WhenNotNull, sb, ctx);
+                break;
+
+            case MemberBindingExpressionSyntax mb:
+                // Only reached from inside a ConditionalAccess.WhenNotNull
+                // (standalone is a syntax error in C#). The leading `?` was
+                // already written by the ConditionalAccess case; here we
+                // just add `.name` — routed through ToCamelCase so property
+                // conventions (Length → length, Name → name) stay consistent
+                // with the plain member-access path.
+                sb.Append('.').Append(NameConventions.ToCamelCase(mb.Name.Identifier.Text));
+                break;
+
+            case ElementBindingExpressionSyntax eb:
+                // Same story as MemberBinding but for indexers (`?[i]`).
+                sb.Append('[');
+                if (eb.ArgumentList.Arguments.Count > 0)
+                    Emit(eb.ArgumentList.Arguments[0].Expression, sb, ctx);
+                sb.Append(']');
+                break;
+
+            case TypeOfExpressionSyntax tof:
+                // No direct JS equivalent — user code that reaches `typeof(T)`
+                // usually wants a type identity string. Emit the stripped
+                // type name as a quoted literal so equality checks against
+                // other typeof() results still work. Not a true Type — enough
+                // for Blazor's route-and-parameter-typing conventions.
+                sb.Append(EncodeJsString(NameConventions.StripQualifiers(tof.Type.ToString())));
+                break;
+
+            case DefaultExpressionSyntax:
+                // `default(T)` — we don't look up T. Null is the correct
+                // default for reference types and for C# value types that the
+                // user ends up comparing loosely (0 == null is false, null ==
+                // null is true); the small number of places where the user
+                // needs the actual 0 / false / "" will have to be rewritten
+                // explicitly. The Analyzer keeps this on the allowlist so
+                // the compile doesn't lie about what shipped.
+                sb.Append("null");
+                break;
+
             case AssignmentExpressionSyntax assign:
                 if (TryEmitEventSubscription(assign, sb, ctx)) break;
                 Emit(assign.Left, sb, ctx);
@@ -100,6 +156,20 @@ internal static class ExpressionEmitter
                 break;
 
             case InvocationExpressionSyntax inv:
+                // `nameof(x)` is a compile-time string in C#; JS has no
+                // counterpart. Emit the target's simple name as a string
+                // literal — the common use-case is logging, and it matches
+                // what Roslyn would produce.
+                if (inv.Expression is IdentifierNameSyntax nameofId
+                    && nameofId.Identifier.Text == "nameof"
+                    && inv.ArgumentList.Arguments.Count == 1)
+                {
+                    var argText = inv.ArgumentList.Arguments[0].Expression.ToString();
+                    var simple = NameConventions.StripQualifiers(argText);
+                    var dot = simple.LastIndexOf('.');
+                    sb.Append(EncodeJsString(dot >= 0 ? simple.Substring(dot + 1) : simple));
+                    break;
+                }
                 if (StaticMemberRewrites.TryRewriteInvocation(inv, sb, ctx)) break;
                 Emit(inv.Expression, sb, ctx);
                 sb.Append('(');
@@ -489,6 +559,7 @@ internal static class ExpressionEmitter
 
     private static bool IsNullLiteral(ExpressionSyntax expr)
         => expr is LiteralExpressionSyntax lit && lit.IsKind(SyntaxKind.NullLiteralExpression);
+
 
     // Emits an `is`-pattern expression. Only `is null` and `is not null` are
     // supported — they map to JS `== null` / `!= null` (loose, matches C#

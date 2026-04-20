@@ -1,4 +1,4 @@
-﻿import { h, markup, Component, LayoutComponent, EventArgs, MouseEventArgs, KeyboardEventArgs, ChangeEventArgs, FocusEventArgs, ApiClient, ApiException, _isNullOrWhiteSpace, _isNullOrEmpty, PageTitle, NavLink, Router } from '@razorshave/runtime';
+﻿import { h, markup, Component, LayoutComponent, EventArgs, MouseEventArgs, KeyboardEventArgs, ChangeEventArgs, FocusEventArgs, ApiClient, ApiException, _isNullOrWhiteSpace, _isNullOrEmpty, _newGuid, PageTitle, NavLink, Router } from '@razorshave/runtime';
 
 export class Counter extends Component {
   render() {

@@ -67,16 +67,20 @@ public sealed class UnsupportedLanguageFeatureAnalyzerTests
     }
 
     [Fact]
-    public void Flags_typeof_expression_inside_component()
+    public void Flags_stackalloc_expression_inside_component()
     {
+        // `typeof(string)` moved onto the allowlist in Q-Batch 12 (with a
+        // documented approximation: emits the simple type name as string).
+        // A stackalloc-expression still has no JS counterpart and is a clean
+        // fallback example for "analyzer flags C# kinds without an emitter".
         var source = ComponentHeader + """
             public class MyPage : ComponentBase
             {
-                public void Use() { var t = typeof(string); }
+                public unsafe void Use() { var mem = stackalloc int[4]; }
             }
             """;
         var diags = AnalyzerRunner.Run(new UnsupportedLanguageFeatureAnalyzer(), source);
-        Assert.Contains(diags, d => d.Id == "RZS2001" && d.GetMessage(System.Globalization.CultureInfo.InvariantCulture).Contains("TypeOfExpression"));
+        Assert.Contains(diags, d => d.Id == "RZS2001" && d.GetMessage(System.Globalization.CultureInfo.InvariantCulture).Contains("StackAllocArrayCreationExpression"));
     }
 
     [Fact]

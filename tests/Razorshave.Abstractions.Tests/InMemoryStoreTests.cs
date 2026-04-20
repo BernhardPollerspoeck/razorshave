@@ -131,4 +131,33 @@ public sealed class InMemoryStoreTests
         });
         Assert.Equal(1, notifications);
     }
+
+    [Fact]
+    public void OnChange_recursion_beyond_8_levels_throws_named_diagnostic()
+    {
+        // Silent stack exhaustion would propagate as "StackOverflowException"
+        // from somewhere deep in the reconciler. The guard turns it into an
+        // actionable InvalidOperationException naming the actual cause.
+        var s = new InMemoryStore<int>();
+        s.OnChange += () => s.Set("x", Random.Shared.Next());
+        var ex = Assert.Throws<InvalidOperationException>(() => s.Set("x", 0));
+        Assert.Contains("recursion", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void OnChange_listener_can_mutate_once_without_tripping_the_guard()
+    {
+        // Derived-value pattern: listener fires, writes one derived key, done.
+        // Must not throw — the guard is for UNBOUNDED recursion only.
+        var s = new InMemoryStore<int>();
+        var fired = false;
+        s.OnChange += () =>
+        {
+            if (fired) return;
+            fired = true;
+            s.Set("derived", 99);
+        };
+        s.Set("x", 1);
+        Assert.Equal(99, s.Get("derived"));
+    }
 }

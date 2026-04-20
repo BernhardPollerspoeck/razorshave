@@ -24,7 +24,7 @@ namespace Razorshave.Cli.Transpiler;
 /// </para>
 /// <para>
 /// Results are cached for the process lifetime; loading 300+ assemblies once is
-/// fine, doing it per <see cref="Transpiler.Transpile"/> call is wasteful.
+/// fine, doing it per <c>Transpiler.Transpile</c> call is wasteful.
 /// </para>
 /// </remarks>
 public static class MetadataReferenceLoader

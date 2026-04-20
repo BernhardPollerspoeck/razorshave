@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { _isNullOrWhiteSpace, _isNullOrEmpty } from './bcl.js';
+import { describe, it, expect, vi } from 'vitest';
+import { _isNullOrWhiteSpace, _isNullOrEmpty, _newGuid } from './bcl.js';
 
 describe('_isNullOrWhiteSpace (string.IsNullOrWhiteSpace bridge)', () => {
   it('returns true for null / undefined / "" / whitespace-only strings', () => {
@@ -40,5 +40,39 @@ describe('_isNullOrEmpty (string.IsNullOrEmpty bridge)', () => {
   it('returns false for any non-empty string — whitespace counts as content', () => {
     expect(_isNullOrEmpty(' ')).toBe(false);
     expect(_isNullOrEmpty('x')).toBe(false);
+  });
+});
+
+describe('_newGuid (Guid.NewGuid bridge)', () => {
+  it('returns a valid UUIDv4 shape', () => {
+    const uuid = _newGuid();
+    expect(uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  it('delegates to crypto.randomUUID when available', () => {
+    const spy = vi.spyOn(crypto, 'randomUUID').mockReturnValue('deadbeef-dead-4bee-8bee-deadbeefdead');
+    try {
+      expect(_newGuid()).toBe('deadbeef-dead-4bee-8bee-deadbeefdead');
+      expect(spy).toHaveBeenCalledOnce();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('falls back to Math.random UUID when crypto.randomUUID throws (non-secure context)', () => {
+    // jsdom's crypto.randomUUID throws in some test modes; simulate that.
+    const spy = vi.spyOn(crypto, 'randomUUID').mockImplementation(() => {
+      throw new Error('SecurityError: crypto.randomUUID requires a secure context');
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const uuid = _newGuid();
+      expect(uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      // Warning is one-time — may already have fired in an earlier test; either way
+      // the fallback UUID is valid.
+    } finally {
+      spy.mockRestore();
+      warnSpy.mockRestore();
+    }
   });
 });

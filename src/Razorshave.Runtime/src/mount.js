@@ -37,6 +37,11 @@ export function mount(ComponentClass, container, props = {}) {
   instance.unmount = function unmount() {
     if (disposed) return;
     disposed = true;
+    // `_destroyed` is checked by kickoffAsyncInit so a late-resolving
+    // onInitializedAsync doesn't schedule a render on a torn-down instance.
+    // Must be set BEFORE destroyTreeAndDom in case the tree-walk triggers
+    // anything that checks it.
+    instance._destroyed = true;
     instance._navUnsubscribe?.();
     instance._navUnsubscribe = null;
     // Fire onDestroy bottom-up for every component in the subtree, then

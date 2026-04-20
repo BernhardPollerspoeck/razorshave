@@ -29,7 +29,25 @@ function stripKey(props) {
 
 // Wraps a raw HTML string so the renderer can insert it via a <template> clone
 // rather than treating it as plain text (which would escape the tags).
+//
+// ⚠️  SECURITY: the argument is inserted as HTML with no sanitization. Treat
+// this exactly like Blazor's `MarkupString` — never pass user-supplied or
+// otherwise untrusted input without sanitising first (DOMPurify, server-side
+// allowlist). Passing `<script>` or `javascript:` href triggers a one-time
+// dev console warning so obviously-dangerous use-cases can't slip by silently,
+// but the warning is *not* a filter: the HTML still renders as given.
+let _warnedMarkupUnsafe = false;
+const _markupDangerPattern = /<script|javascript:|on\w+\s*=/i;
 export function markup(html) {
+  if (!_warnedMarkupUnsafe && typeof html === 'string' && _markupDangerPattern.test(html)) {
+    _warnedMarkupUnsafe = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[razorshave] markup() received HTML containing <script>, javascript: URI, or inline '
+      + 'event handler (on*=). This bypasses the renderer\'s escaping and is an XSS vector '
+      + 'if the HTML came from user input. Sanitise untrusted HTML before passing it here.'
+    );
+  }
   return { type: '__markup__', html };
 }
 

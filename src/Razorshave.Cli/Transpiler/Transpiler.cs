@@ -47,8 +47,29 @@ public static class Transpiler
     }
 
     /// <summary>
+    /// Transpile a specific component class from an already-parsed tree.
+    /// Used when a single Razor file produces more than one component class
+    /// (rare — Razor's source generator typically emits one class per
+    /// <c>.razor</c>, but code-behind files can declare additional partial
+    /// or sibling components). Caller owns the tree; the class node must
+    /// belong to it or the SemanticModel lookup throws.
+    /// </summary>
+    public static string Transpile(SyntaxTree tree, ClassDeclarationSyntax component, IReadOnlyList<MetadataReference>? references = null, string? globalUsings = null)
+    {
+        ArgumentNullException.ThrowIfNull(tree);
+        ArgumentNullException.ThrowIfNull(component);
+
+        var model = BuildCompilationFromTree(tree, references, globalUsings);
+
+        var sb = new StringBuilder();
+        HeaderEmitter.Emit(sb, component);
+        ClassEmitter.Emit(component, model, sb);
+        return sb.ToString();
+    }
+
+    /// <summary>
     /// Transpile a non-Razor, <c>[Client]</c>-marked class (a service or
-    /// ApiClient subclass). Like <see cref="Transpile"/> but selects the
+    /// ApiClient subclass). Like <c>Transpile</c> but selects the
     /// class by attribute rather than base type, and emits the plain class
     /// form (no <c>_injects</c> manifest, no <c>extends Component</c>).
     /// Returns an empty string when no matching class is present.
@@ -82,14 +103,28 @@ public static class Transpiler
     {
         ArgumentNullException.ThrowIfNull(tree);
 
-        var model = BuildCompilationFromTree(tree, references, globalUsings);
-
         var cls = tree.GetRoot()
             .DescendantNodes()
             .OfType<ClassDeclarationSyntax>()
             .FirstOrDefault(ComponentClassifier.IsClientClass);
-
         if (cls is null) return string.Empty;
+
+        return TranspileClientClass(tree, cls, references, globalUsings);
+    }
+
+    /// <summary>
+    /// Transpile a specific <c>[Client]</c> class from an already-parsed tree.
+    /// Used when a single file contains more than one <c>[Client]</c> class
+    /// and each needs its own output module — BuildCommand iterates over the
+    /// matching classes and calls this overload per class so every service
+    /// lands in <c>dist/&lt;Name&gt;.js</c> instead of only the first.
+    /// </summary>
+    public static string TranspileClientClass(SyntaxTree tree, ClassDeclarationSyntax cls, IReadOnlyList<MetadataReference>? references = null, string? globalUsings = null)
+    {
+        ArgumentNullException.ThrowIfNull(tree);
+        ArgumentNullException.ThrowIfNull(cls);
+
+        var model = BuildCompilationFromTree(tree, references, globalUsings);
 
         var sb = new StringBuilder();
         HeaderEmitter.Emit(sb, cls);

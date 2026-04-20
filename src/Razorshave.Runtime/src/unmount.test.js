@@ -104,4 +104,35 @@ describe('unmount()', () => {
 
     a.unmount();
   });
+
+  it('a late-resolving onInitializedAsync after unmount does NOT trigger a render', async () => {
+    // Regression for the kickoffAsyncInit / unmount race. Previously the
+    // resolved promise called stateHasChanged on the detached instance,
+    // which reached patchRoot with a null container and threw deep in
+    // the reconciler. `_destroyed` short-circuits the bubble.
+    let renderCount = 0;
+    let releaseAsyncInit;
+    const pending = new Promise(r => { releaseAsyncInit = r; });
+
+    class Slow extends Component {
+      async onInitializedAsync() { await pending; this.ready = true; }
+      render() { renderCount++; return h('p', null, this.ready ? 'ready' : 'loading'); }
+    }
+
+    const c = document.createElement('div');
+    const inst = mount(Slow, c);
+    // First render is synchronous; async-init is in flight.
+    expect(renderCount).toBe(1);
+
+    inst.unmount();
+
+    // Release the promise AFTER unmount — the bubble attempt must be
+    // swallowed silently.
+    releaseAsyncInit();
+    await pending;
+    await nextFrame();
+
+    // No additional render — render count stays at 1.
+    expect(renderCount).toBe(1);
+  });
 });
