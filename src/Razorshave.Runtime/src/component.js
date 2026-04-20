@@ -112,81 +112,113 @@ export class Component {
   // the previous subtree and reinsert. Child component instances are kept
   // across rerenders via _childInstances so their state persists.
   //
-  // A targeted focus-restore runs around the teardown: the naive replace
-  // would otherwise lose input focus (and caret position) on every keystroke
-  // that fires stateHasChanged — e.g. `@bind` on a text input becomes
-  // unusable. Capture the active element's path before teardown, then walk
-  // the new tree to the same path and re-focus afterwards.
+  // Focus-preservation: if the currently-focused element sits inside our
+  // subtree, we locate its counterpart in the freshly-rendered tree and
+  // splice the live node into that slot before the DOM swap. The live node
+  // stays in-document through the whole operation — without this the naive
+  // replace would blur the input on every keystroke that fires
+  // stateHasChanged (@bind becomes unusable: caret loses position, the
+  // :focus CSS transition replays once per character).
   _rerender() {
     if (!this._container) return;
 
-    const focusSnapshot = captureFocus(this._container);
-
-    for (const node of this._domNodes) {
-      if (node.parentNode) node.parentNode.removeChild(node);
-    }
-    this._domNodes = [];
+    const active = typeof document !== 'undefined' ? document.activeElement : null;
+    const preserving = active && this._container.contains(active);
+    const focusPath = preserving ? computePath(active, this._container) : null;
 
     const produced = renderComponentTree(this);
     if (produced === null) {
-      restoreFocus(this._container, focusSnapshot);
+      this._container.replaceChildren();
+      this._domNodes = [];
       return;
     }
 
-    // Track roots for the next teardown. DocumentFragments splice their
-    // children into the container directly, so snapshot them before append.
     const roots = produced.nodeType === 11 /* DOCUMENT_FRAGMENT_NODE */
       ? Array.from(produced.childNodes)
       : [produced];
-    this._container.appendChild(produced);
+
+    // Try to keep the focused element identity across the swap. When the
+    // focused path resolves to a same-tag counterpart in the new tree, we
+    // sync the fresh attributes onto the live node and splice the live node
+    // into the new tree in the counterpart's slot.
+    let spliced = false;
+    if (focusPath && focusPath.length > 0 && focusPath[0] < roots.length) {
+      const subPath = focusPath.slice(1);
+      const counterpart = resolveSubPath(roots[focusPath[0]], subPath);
+      if (counterpart && counterpart.tagName === active.tagName) {
+        syncNonDisruptiveAttrs(active, counterpart);
+        counterpart.parentNode.replaceChild(active, counterpart);
+        spliced = true;
+      }
+    }
+
+    // Atomic container swap — old subtree out, new subtree (with the spliced
+    // live node, if any) in. Using replaceChildren batches the mutation so
+    // the focused live node transitions through at most one off-document
+    // tick, avoiding the full focus/blur/focus churn of the naive approach.
+    this._container.replaceChildren(...roots);
     this._domNodes = roots;
 
-    restoreFocus(this._container, focusSnapshot);
+    // Some browsers drop focus when a node is temporarily detached during
+    // replaceChild. Re-asserting is cheap and a no-op when focus survived.
+    if (spliced && document.activeElement !== active && typeof active.focus === 'function') {
+      active.focus();
+    }
 
     this.onAfterRender(!this._hasRenderedBefore);
     this._hasRenderedBefore = true;
   }
 }
 
-// Snapshot the focused element's position inside `container` (as a child-
-// index path) plus its caret selection. Returns null when focus is elsewhere
-// or not recoverable — the caller then treats the rerender as normal.
-function captureFocus(container) {
-  if (typeof document === 'undefined') return null;
-  const active = document.activeElement;
-  if (!active || !container.contains(active)) return null;
-
+// Child-index path from `container` down to `node` (inclusive of node).
+// Returns null when node is not inside container.
+function computePath(node, container) {
   const path = [];
-  let cur = active;
+  let cur = node;
   while (cur && cur !== container) {
     const parent = cur.parentNode;
     if (!parent) return null;
     path.unshift(Array.prototype.indexOf.call(parent.childNodes, cur));
     cur = parent;
   }
-  return {
-    path,
-    selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
-    selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null,
-  };
+  return cur === container ? path : null;
 }
 
-function restoreFocus(container, snapshot) {
-  if (!snapshot) return;
-  let cur = container;
-  for (const i of snapshot.path) {
-    if (!cur || !cur.childNodes || !cur.childNodes[i]) return;
+// Walk `root` by child indices and return the descendant at the end.
+function resolveSubPath(root, subPath) {
+  let cur = root;
+  for (const i of subPath) {
+    if (!cur || !cur.childNodes || !cur.childNodes[i]) return null;
     cur = cur.childNodes[i];
   }
-  if (!cur || typeof cur.focus !== 'function') return;
-  cur.focus();
-  if (snapshot.selectionStart !== null && typeof cur.setSelectionRange === 'function') {
-    try {
-      cur.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd ?? snapshot.selectionStart);
-    } catch {
-      // Not every input type supports setSelectionRange (e.g. number, email
-      // in some browsers). Silent fallback — the focus itself already made
-      // typing recover.
+  return cur;
+}
+
+// Copy attributes from the fresh element to the live element, but skip
+// properties that would disrupt editing on inputs. Specifically:
+//   * `value` — rewriting it would reset the caret to the end.
+//   * `selectionStart` / `selectionEnd` — not a real attribute but some
+//     inputs encode caret via properties; leaving them alone keeps caret.
+// Event listeners aren't touched; the live node keeps its existing handlers,
+// which close over the component instance and therefore still see current
+// state. A future diff pass can swap handlers when closures capture loop
+// variables.
+function syncNonDisruptiveAttrs(live, fresh) {
+  const tag = live.tagName;
+  const skip = (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT')
+    ? new Set(['value'])
+    : null;
+
+  // Remove attributes the fresh element no longer has.
+  for (const attr of Array.from(live.attributes)) {
+    if (skip?.has(attr.name)) continue;
+    if (!fresh.hasAttribute(attr.name)) live.removeAttribute(attr.name);
+  }
+  // Apply fresh attribute values where they differ.
+  for (const attr of Array.from(fresh.attributes)) {
+    if (skip?.has(attr.name)) continue;
+    if (live.getAttribute(attr.name) !== attr.value) {
+      live.setAttribute(attr.name, attr.value);
     }
   }
 }

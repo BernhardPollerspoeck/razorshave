@@ -1,5 +1,6 @@
 using System.Text;
 
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -45,6 +46,14 @@ internal static class ExpressionEmitter
                 EmitIdentifier(id.Identifier.Text, sb, ctx);
                 break;
 
+            case GenericNameSyntax gen:
+                // `Get<TResponse>(url)` — drop the type-arg list, emit the
+                // name the same way a non-generic identifier would. Generic
+                // inference happens at C# compile time; by the time we hit JS
+                // there's no runtime type to preserve.
+                EmitIdentifier(gen.Identifier.Text, sb, ctx);
+                break;
+
             case AliasQualifiedNameSyntax alias:
                 // `global::Microsoft` → emit just `Microsoft`; JS has no alias syntax.
                 if (alias.Name is IdentifierNameSyntax aliasName)
@@ -83,7 +92,7 @@ internal static class ExpressionEmitter
             case MemberAccessExpressionSyntax mae:
                 if (StaticMemberRewrites.TryRewriteMemberAccess(mae, sb, ctx)) break;
                 Emit(mae.Expression, sb, ctx);
-                sb.Append('.').Append(NameConventions.ToCamelCase(mae.Name.Identifier.Text));
+                sb.Append('.').Append(ResolveMemberName(mae, ctx));
                 break;
 
             case InvocationExpressionSyntax inv:
@@ -169,6 +178,119 @@ internal static class ExpressionEmitter
                 {
                     sb.Append("{}");
                 }
+                break;
+
+            case ElementAccessExpressionSyntax ea:
+                // `arr[i]` → `arr[i]`. Indexers on dictionaries, strings, and
+                // custom indexer properties map the same way; user-defined
+                // indexers that do something clever will break, but that's
+                // out of M0 scope.
+                Emit(ea.Expression, sb, ctx);
+                sb.Append('[');
+                for (var i = 0; i < ea.ArgumentList.Arguments.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    Emit(ea.ArgumentList.Arguments[i].Expression, sb, ctx);
+                }
+                sb.Append(']');
+                break;
+
+            case CastExpressionSyntax cast:
+                // JS has no explicit cast — preserve the value. For integer
+                // narrowing casts we wrap in Math.trunc so `(int)1.9 === 1`
+                // matches .NET semantics. Floating-point and widening casts
+                // are already no-ops.
+                var castType = cast.Type.ToString();
+                if (castType is "int" or "long" or "short" or "byte" or "sbyte" or "uint" or "ulong" or "ushort")
+                {
+                    sb.Append("Math.trunc(");
+                    Emit(cast.Expression, sb, ctx);
+                    sb.Append(')');
+                }
+                else
+                {
+                    Emit(cast.Expression, sb, ctx);
+                }
+                break;
+
+            case ArrayCreationExpressionSyntax arr:
+                // `new T[n]` → `new Array(n)`. The Rank-specifier's size
+                // argument becomes the JS Array constructor arg. `new T[]`
+                // with no size → empty array.
+                if (arr.Type.RankSpecifiers.Count > 0 && arr.Type.RankSpecifiers[0].Sizes.Count > 0
+                    && arr.Type.RankSpecifiers[0].Sizes[0] is not OmittedArraySizeExpressionSyntax)
+                {
+                    sb.Append("new Array(");
+                    Emit(arr.Type.RankSpecifiers[0].Sizes[0], sb, ctx);
+                    sb.Append(')');
+                }
+                else if (arr.Initializer is not null)
+                {
+                    sb.Append('[');
+                    for (var i = 0; i < arr.Initializer.Expressions.Count; i++)
+                    {
+                        if (i > 0) sb.Append(", ");
+                        Emit(arr.Initializer.Expressions[i], sb, ctx);
+                    }
+                    sb.Append(']');
+                }
+                else
+                {
+                    sb.Append("[]");
+                }
+                break;
+
+            case ImplicitArrayCreationExpressionSyntax implicitArr:
+                // `new[] { 1, 2, 3 }` → `[1, 2, 3]`.
+                sb.Append('[');
+                for (var i = 0; i < implicitArr.Initializer.Expressions.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    Emit(implicitArr.Initializer.Expressions[i], sb, ctx);
+                }
+                sb.Append(']');
+                break;
+
+            case CollectionExpressionSyntax coll:
+                // `[1, 2, 3]` C# collection literal → same in JS.
+                sb.Append('[');
+                for (var i = 0; i < coll.Elements.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    if (coll.Elements[i] is ExpressionElementSyntax ee)
+                    {
+                        Emit(ee.Expression, sb, ctx);
+                    }
+                }
+                sb.Append(']');
+                break;
+
+            case InterpolatedStringExpressionSyntax interp:
+                // C# `$"hello {x}"` → template literal `` `hello ${x}` ``.
+                sb.Append('`');
+                foreach (var content in interp.Contents)
+                {
+                    switch (content)
+                    {
+                        case InterpolatedStringTextSyntax txt:
+                            // Escape ` and ${ so content doesn't close the literal early.
+                            sb.Append(txt.TextToken.ValueText
+                                .Replace("\\", "\\\\")
+                                .Replace("`", "\\`")
+                                .Replace("${", "\\${"));
+                            break;
+                        case InterpolationSyntax interpHole:
+                            sb.Append("${");
+                            Emit(interpHole.Expression, sb, ctx);
+                            sb.Append('}');
+                            break;
+                    }
+                }
+                sb.Append('`');
+                break;
+
+            case SwitchExpressionSyntax swe:
+                EmitSwitchExpression(swe, sb, ctx);
                 break;
 
             case WithExpressionSyntax with:
@@ -257,6 +379,78 @@ internal static class ExpressionEmitter
         Emit(handler, sb, ctx);
     }
 
+    // `expr switch { pattern => result, _ => default }` → nested ternary.
+    // Supports constant patterns (`5`), relational patterns (`< 10`, `>= 0`),
+    // and the discard (`_`) as final arm. Anything fancier (type patterns,
+    // tuple patterns, property patterns) falls through as TODO-null.
+    private static void EmitSwitchExpression(SwitchExpressionSyntax swe, StringBuilder sb, EmitContext ctx)
+    {
+        var arms = swe.Arms;
+        if (arms.Count == 0) { sb.Append("undefined"); return; }
+
+        var subject = new StringBuilder();
+        Emit(swe.GoverningExpression, subject, ctx);
+        var subjectJs = subject.ToString();
+
+        for (var i = 0; i < arms.Count; i++)
+        {
+            var arm = arms[i];
+            var last = i == arms.Count - 1;
+            var condJs = SwitchPatternCondition(arm.Pattern, arm.WhenClause, subjectJs, ctx);
+
+            if (condJs is null)
+            {
+                // Discard / irrefutable pattern — emit as the fallthrough value.
+                Emit(arm.Expression, sb, ctx);
+                return;
+            }
+
+            sb.Append(condJs).Append(" ? ");
+            Emit(arm.Expression, sb, ctx);
+            sb.Append(" : ");
+            if (last)
+            {
+                // No default arm (no `_`) — JS fallthrough is undefined.
+                sb.Append("undefined");
+            }
+        }
+    }
+
+    // Build a JS boolean expression that tests whether `subject` matches the
+    // given C# pattern. Returns null when the pattern is irrefutable (the
+    // discard `_` or a bare `var x` binding — last-arm catch-all).
+    private static string? SwitchPatternCondition(PatternSyntax pattern, WhenClauseSyntax? when, string subjectJs, EmitContext ctx)
+    {
+        string? core = pattern switch
+        {
+            DiscardPatternSyntax => null,
+            VarPatternSyntax => null,
+            ConstantPatternSyntax cp => BuildConstantMatch(subjectJs, cp.Expression, ctx),
+            RelationalPatternSyntax rp => BuildRelationalMatch(subjectJs, rp, ctx),
+            _ => "false /* TODO: unsupported switch pattern */",
+        };
+
+        if (when is null) return core;
+        var whenSb = new StringBuilder();
+        Emit(when.Condition, whenSb, ctx);
+        return core is null ? $"({whenSb})" : $"({core} && {whenSb})";
+    }
+
+    private static string BuildConstantMatch(string subjectJs, ExpressionSyntax constExpr, EmitContext ctx)
+    {
+        var value = new StringBuilder();
+        Emit(constExpr, value, ctx);
+        return $"{subjectJs} === {value}";
+    }
+
+    private static string BuildRelationalMatch(string subjectJs, RelationalPatternSyntax rp, EmitContext ctx)
+    {
+        var op = rp.OperatorToken.Text;
+        var value = new StringBuilder();
+        Emit(rp.Expression, value, ctx);
+        return $"{subjectJs} {op} {value}";
+    }
+
     private static void EmitLambdaBody(CSharpSyntaxNode body, StringBuilder sb, EmitContext ctx)
     {
         switch (body)
@@ -302,6 +496,30 @@ internal static class ExpressionEmitter
             }
         }
         sb.Append(" }");
+    }
+
+    // Pick the JS property name for a C# member access. Normally we just
+    // camelCase the declared name, but if the property carries
+    // `[JsonPropertyName("x")]` we honour that — this lets user code read
+    // snake_case JSON (e.g. open-meteo's `temperature_2m_max`) through
+    // PascalCase C# properties without a manual mapping layer.
+    private static string ResolveMemberName(MemberAccessExpressionSyntax mae, EmitContext ctx)
+    {
+        var symbol = ctx.Model.GetSymbolInfo(mae).Symbol;
+        if (symbol is IPropertySymbol prop)
+        {
+            foreach (var attr in prop.GetAttributes())
+            {
+                var attrName = attr.AttributeClass?.Name;
+                if (attrName == "JsonPropertyNameAttribute"
+                    && attr.ConstructorArguments.Length > 0
+                    && attr.ConstructorArguments[0].Value is string jsonName)
+                {
+                    return jsonName;
+                }
+            }
+        }
+        return NameConventions.ToCamelCase(mae.Name.Identifier.Text);
     }
 
     private static void EmitIdentifier(string name, StringBuilder sb, EmitContext ctx)

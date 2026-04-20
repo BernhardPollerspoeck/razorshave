@@ -71,6 +71,30 @@ internal static class StaticMemberRewrites
             return true;
         }
 
+        // Date/time formatting helpers. `DateOnly` and `DateTime` both expose
+        // a family of `.ToShortDateString()` / `.ToLongTimeString()` methods.
+        // We rewrite via `DateOnly.Parse` → JS `Date`, so these formatters
+        // land on a real Date instance. `toLocaleDateString()` is the nearest
+        // JS equivalent; the user's browser locale decides formatting, same
+        // as .NET's current culture.
+        if (inv.ArgumentList.Arguments.Count == 0)
+        {
+            string? jsMethod = mae.Name.Identifier.Text switch
+            {
+                "ToShortDateString" => "toLocaleDateString",
+                "ToLongDateString" => "toLocaleDateString",
+                "ToShortTimeString" => "toLocaleTimeString",
+                "ToLongTimeString" => "toLocaleTimeString",
+                _ => null,
+            };
+            if (jsMethod is not null)
+            {
+                ExpressionEmitter.Emit(mae.Expression, sb, ctx);
+                sb.Append('.').Append(jsMethod).Append("()");
+                return true;
+            }
+        }
+
         if (!TryGetStaticReceiver(mae.Expression, out var typeName)) return false;
         var memberName = mae.Name.Identifier.Text;
         var args = inv.ArgumentList.Arguments;
@@ -99,6 +123,18 @@ internal static class StaticMemberRewrites
 
             case ("Guid", "NewGuid"):
                 sb.Append("crypto.randomUUID()");
+                return true;
+
+            case ("DateOnly", "Parse"):
+            case ("DateTime", "Parse"):
+            case ("DateTimeOffset", "Parse"):
+                // Accepts ISO-8601-ish strings — JS `new Date(x)` handles the
+                // same inputs. We drop trailing CultureInfo args; the JS Date
+                // constructor is locale-insensitive for parseable ISO input.
+                if (args.Count < 1) return false;
+                sb.Append("new Date(");
+                ExpressionEmitter.Emit(args[0].Expression, sb, ctx);
+                sb.Append(')');
                 return true;
         }
 

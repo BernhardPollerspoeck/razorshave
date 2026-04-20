@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json.Serialization;
 
 using Razorshave.Abstractions;
 
@@ -48,12 +49,16 @@ public sealed class WeatherApi(HttpClient http) : ApiClient(http), IWeatherApi
 
     private sealed class OpenMeteoResponse
     {
+        [JsonPropertyName("daily")]
         public DailyData Daily { get; set; } = new();
     }
 
     private sealed class DailyData
     {
+        [JsonPropertyName("time")]
         public string[] Time { get; set; } = [];
+
+        [JsonPropertyName("temperature_2m_max")]
         public double[] Temperature2mMax { get; set; } = [];
     }
 }

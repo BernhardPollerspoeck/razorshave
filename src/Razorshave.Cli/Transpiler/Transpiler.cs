@@ -54,4 +54,39 @@ public static class Transpiler
         ClassEmitter.Emit(component, model, sb);
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Transpile a non-Razor, <c>[Client]</c>-marked class (a service or
+    /// ApiClient subclass). Like <see cref="Transpile"/> but selects the
+    /// class by attribute rather than base type, and emits the plain class
+    /// form (no <c>_injects</c> manifest, no <c>extends Component</c>).
+    /// Returns an empty string when no matching class is present.
+    /// </summary>
+    public static string TranspileClientClass(string source, IReadOnlyList<MetadataReference>? additionalReferences = null)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var references = additionalReferences is { Count: > 0 }
+            ? MetadataReferenceLoader.SharedFramework().Concat(additionalReferences).ToArray()
+            : MetadataReferenceLoader.SharedFramework();
+        var compilation = CSharpCompilation.Create(
+            assemblyName: "Razorshave.Transpile",
+            syntaxTrees: [tree],
+            references: references,
+            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var model = compilation.GetSemanticModel(tree);
+
+        var cls = tree.GetRoot()
+            .DescendantNodes()
+            .OfType<ClassDeclarationSyntax>()
+            .FirstOrDefault(ComponentClassifier.IsClientClass);
+
+        if (cls is null) return string.Empty;
+
+        var sb = new StringBuilder();
+        HeaderEmitter.Emit(sb, cls);
+        ClassEmitter.EmitPlain(cls, model, sb);
+        return sb.ToString();
+    }
 }

@@ -85,6 +85,8 @@ internal static class BuildCommand
             return 5;
         }
 
+        var clients = TranspileClientClasses(absProject, distDir, configuration);
+
         Console.WriteLine("[3/6] Copying runtime ...");
         var runtimeSrc = FindRuntimeSource();
         if (runtimeSrc is null)
@@ -96,7 +98,7 @@ internal static class BuildCommand
         CopyDirectory(runtimeSrc, runtimeStaging);
 
         Console.WriteLine("[4/6] Writing main.js entry ...");
-        WriteAppJs(distDir, absProject, components, routesConfig);
+        WriteAppJs(distDir, absProject, components, routesConfig, clients);
 
         Console.WriteLine("[5/6] Bundling with esbuild ...");
         var esbuild = FindEsbuildBinary();
@@ -113,17 +115,70 @@ internal static class BuildCommand
 
         Console.WriteLine();
         var routedCount = components.Count(c => c.RoutePatterns.Count > 0);
-        Console.WriteLine($"✓ razorshave: {components.Count} component(s), {routedCount} routed → {distDir}");
+        Console.WriteLine($"✓ razorshave: {components.Count} component(s), {routedCount} routed, {clients.Count} client service(s) → {distDir}");
         foreach (var c in components)
         {
             var marker = c.RoutePatterns.Count > 0 ? $"  [{string.Join(", ", c.RoutePatterns)}]" : "";
             Console.WriteLine($"    {c.Name}.js{marker}");
+        }
+        foreach (var c in clients)
+        {
+            var marker = c.InterfaceKeys.Count > 0 ? $"  →{{ {string.Join(", ", c.InterfaceKeys)} }}" : "";
+            Console.WriteLine($"    {c.Name}.js (client){marker}");
         }
         if (routesConfig.DefaultLayout is not null)
             Console.WriteLine($"    DefaultLayout: {routesConfig.DefaultLayout}");
         if (routesConfig.NotFound is not null)
             Console.WriteLine($"    NotFound: {routesConfig.NotFound}");
         return 0;
+    }
+
+    // Walks every user .cs file in the project tree, looking for classes
+    // marked `[Client]`. Each match gets transpiled to `dist/<Name>.js` and
+    // collects its implemented interface names for auto-registration in the
+    // generated main.js. Folders that are build artefacts (bin/, obj/) are
+    // skipped so we don't pick up IDE-generated junk.
+    private static List<TranspiledClient> TranspileClientClasses(string projectDir, string distDir, string configuration)
+    {
+        var clients = new List<TranspiledClient>();
+        var projectRefs = LoadProjectBinReferences(projectDir, configuration);
+
+        foreach (var csFile in EnumerateUserCsFiles(projectDir))
+        {
+            string source;
+            try { source = File.ReadAllText(csFile); }
+            catch { continue; }
+
+            if (!source.Contains("[Client]", StringComparison.Ordinal)) continue;
+
+            var tree = CSharpSyntaxTree.ParseText(source);
+            var cls = tree.GetRoot().DescendantNodes()
+                .OfType<ClassDeclarationSyntax>()
+                .FirstOrDefault(Razorshave.Cli.Transpiler.ComponentClassifier.IsClientClass);
+            if (cls is null) continue;
+
+            var js = Razorshave.Cli.Transpiler.Transpiler.TranspileClientClass(source, projectRefs);
+            if (string.IsNullOrWhiteSpace(js)) continue;
+
+            var name = cls.Identifier.Text;
+            var outFile = Path.Combine(distDir, $"{name}.js");
+            File.WriteAllText(outFile, js);
+
+            var interfaces = Razorshave.Cli.Transpiler.ComponentClassifier.EnumerateInterfaces(cls).ToArray();
+            clients.Add(new TranspiledClient(name, outFile, interfaces));
+        }
+        return clients;
+    }
+
+    private static IEnumerable<string> EnumerateUserCsFiles(string projectDir)
+    {
+        foreach (var file in Directory.EnumerateFiles(projectDir, "*.cs", SearchOption.AllDirectories))
+        {
+            var rel = Path.GetRelativePath(projectDir, file).Replace('\\', '/');
+            if (rel.StartsWith("bin/", StringComparison.Ordinal)) continue;
+            if (rel.StartsWith("obj/", StringComparison.Ordinal)) continue;
+            yield return file;
+        }
     }
 
     // --- Build ---
@@ -161,6 +216,11 @@ internal static class BuildCommand
         string Name,
         string OutputFile,
         IReadOnlyList<string> RoutePatterns);
+
+    private sealed record TranspiledClient(
+        string Name,
+        string OutputFile,
+        IReadOnlyList<string> InterfaceKeys);
 
     private static (List<TranspiledComponent> components, RouteExtractor.RoutesConfig routesConfig)
         TranspileAll(string generatedRoot, string distDir, string projectDir, string configuration)
@@ -306,7 +366,8 @@ internal static class BuildCommand
         string distDir,
         string projectDir,
         IReadOnlyList<TranspiledComponent> components,
-        RouteExtractor.RoutesConfig routesConfig)
+        RouteExtractor.RoutesConfig routesConfig,
+        IReadOnlyList<TranspiledClient> clients)
     {
         var routable = components.Where(c => c.RoutePatterns.Count > 0).ToList();
         var notFound = routesConfig.NotFound is { } nf
@@ -320,7 +381,10 @@ internal static class BuildCommand
 
         var sb = new StringBuilder();
         sb.AppendLine("// Generated by Razorshave — do not edit.");
-        sb.AppendLine("import { Component, h, mount, Router } from '@razorshave/runtime';");
+        var runtimeImports = clients.Count > 0
+            ? "Component, h, mount, Router, container"
+            : "Component, h, mount, Router";
+        sb.AppendLine(CultureInfo.InvariantCulture, $"import {{ {runtimeImports} }} from '@razorshave/runtime';");
         // Side-effect import — registrations inside razorshave.init.js need
         // to land in the container before the root component is constructed.
         if (initScript is not null)
@@ -337,6 +401,25 @@ internal static class BuildCommand
         foreach (var c in routable) Import(c.Name);
         if (notFound is not null) Import(notFound.Name);
         if (layout is not null)   Import(layout.Name);
+        foreach (var c in clients) Import(c.Name);
+
+        // Register each `[Client]` class under every interface it implements.
+        // Done before `mount(...)` so components resolving injects during
+        // construction see the bindings. The null argument is passed through
+        // the C# primary constructor (`HttpClient http`) — the JS ApiClient
+        // base ignores it; fetch() handles all HTTP.
+        if (clients.Count > 0)
+        {
+            sb.AppendLine();
+            foreach (var c in clients)
+            {
+                foreach (var iface in c.InterfaceKeys)
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture,
+                        $"container.register('{iface}', () => new {c.Name}(null));");
+                }
+            }
+        }
 
         sb.AppendLine();
         sb.AppendLine("const routes = [");
