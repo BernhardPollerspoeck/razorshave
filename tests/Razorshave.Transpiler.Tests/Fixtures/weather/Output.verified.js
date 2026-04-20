@@ -11,7 +11,7 @@ export class Weather extends Component {
     if (this.forecasts == null) {
       _c.push(markup("<p><em>Loading...</em></p>"));
     } else {
-      _c.push(h("table", { 'class': "table" }, markup("<thead><tr><th>Date</th>\n                <th aria-label=\"Temperature in Celsius\">Temp. (C)</th>\n                <th aria-label=\"Temperature in Fahrenheit\">Temp. (F)</th>\n                <th>Summary</th></tr></thead>\n        "), h("tbody", {}, (() => { const _c = []; for (const forecast of this.forecasts) { _c.push(h("tr", {}, h("td", {}, forecast.date.toShortDateString()), markup("\n                    "), h("td", {}, forecast.temperatureC), markup("\n                    "), h("td", {}, forecast.temperatureF), markup("\n                    "), h("td", {}, forecast.summary))); } return _c; })())));
+      _c.push(h("table", { 'class': "table" }, markup("<thead><tr><th>Date</th>\n                <th aria-label=\"Temperature in Celsius\">Temp. (C)</th>\n                <th aria-label=\"Temperature in Fahrenheit\">Temp. (F)</th>\n                <th>Summary</th></tr></thead>\n        "), h("tbody", {}, (() => { const _c = []; for (const forecast of this.forecasts) { _c.push(h("tr", {}, h("td", {}, forecast.date.toLocaleDateString()), markup("\n                    "), h("td", {}, forecast.temperatureC), markup("\n                    "), h("td", {}, forecast.temperatureF), markup("\n                    "), h("td", {}, forecast.summary))); } return _c; })())));
     }
     return _c;
   }

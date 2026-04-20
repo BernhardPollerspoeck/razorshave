@@ -1,4 +1,4 @@
-import { renderComponentTree } from './vdom.js';
+import { mountRoot, patchRoot } from './vdom.js';
 import { container } from './container.js';
 import { reportRuntimeError } from './errors.js';
 
@@ -19,31 +19,20 @@ export function setActiveRoot(instance) {
 // the event-handler wrapper in vdom.js) calls stateHasChanged() to queue a
 // rerender on the next frame.
 //
-// Child-instance reuse: every Component holds a Map<Ctor, Array<instance>> of
-// its last render's child components — one array per Ctor, ordered by
-// render-occurrence. When the parent re-renders, vdom.js walks the previous
-// array at the same (Ctor, index) slot; if found, the instance is reused
-// (props updated, state preserved). Keying by index (not just by Ctor) is
-// what lets two <Counter /> siblings keep independent state — without it,
-// both would collide on the same map key and the second render's counter
-// would steal the first's instance.
+// Child-instance reuse is handled by the reconciler in vdom.js: it walks the
+// previous and next vnode trees side-by-side, preserves component instances
+// when the Ctor (and optionally @key) matches at the same slot, and fires
+// onDestroy when a component leaves the tree. Two <Counter /> siblings keep
+// independent state because they occupy distinct positions in the vnode
+// list; no separate Map-by-(Ctor,index) bookkeeping on the instance.
 
 export class Component {
   constructor() {
     this.props = {};
     this._container = null;     // DOM element we render into (root only)
-    this._domNodes = [];        // root nodes we currently own
+    this._vtree = null;         // previous vnode tree (for diff on next render)
     this._renderScheduled = false;
     this._hasRenderedBefore = false;
-
-    // Child components from the most recent render, bucketed by Ctor. Vdom.js
-    // replaces this with a fresh Map on each render and looks into the
-    // previous one via _prevChildrenForThisRender to decide reuse-vs-create.
-    this._childInstances = new Map();
-    this._prevChildrenForThisRender = null;
-    // Per-render counter of how many times each Ctor has appeared so far in
-    // the current render pass. Reset at the top of renderComponentTree.
-    this._nextChildIndex = new Map();
   }
 
   render() {
@@ -108,118 +97,25 @@ export class Component {
     kickoffAsyncInit(this);
   }
 
-  // Fresh render → replace. Keyed DOM diffing is a later step; for M0 we nuke
-  // the previous subtree and reinsert. Child component instances are kept
-  // across rerenders via _childInstances so their state persists.
-  //
-  // Focus-preservation: if the currently-focused element sits inside our
-  // subtree, we locate its counterpart in the freshly-rendered tree and
-  // splice the live node into that slot before the DOM swap. The live node
-  // stays in-document through the whole operation — without this the naive
-  // replace would blur the input on every keystroke that fires
-  // stateHasChanged (@bind becomes unusable: caret loses position, the
-  // :focus CSS transition replays once per character).
+  // Runs the reconciler against the container. First call mounts from
+  // scratch; every subsequent call diffs the new vnode tree against the
+  // previous one and patches DOM in place. DOM identity is preserved for
+  // nodes whose type (and @key) match at the same slot, so focus, caret,
+  // scroll position, and running CSS transitions all survive re-renders
+  // without any special-case handling in this file.
   _rerender() {
     if (!this._container) return;
 
-    const active = typeof document !== 'undefined' ? document.activeElement : null;
-    const preserving = active && this._container.contains(active);
-    const focusPath = preserving ? computePath(active, this._container) : null;
-
-    const produced = renderComponentTree(this);
-    if (produced === null) {
-      this._container.replaceChildren();
-      this._domNodes = [];
-      return;
+    const newVtree = this.render?.() ?? null;
+    if (!this._hasRenderedBefore) {
+      mountRoot(this._container, newVtree, this);
+    } else {
+      patchRoot(this._container, this._vtree, newVtree, this);
     }
-
-    const roots = produced.nodeType === 11 /* DOCUMENT_FRAGMENT_NODE */
-      ? Array.from(produced.childNodes)
-      : [produced];
-
-    // Try to keep the focused element identity across the swap. When the
-    // focused path resolves to a same-tag counterpart in the new tree, we
-    // sync the fresh attributes onto the live node and splice the live node
-    // into the new tree in the counterpart's slot.
-    let spliced = false;
-    if (focusPath && focusPath.length > 0 && focusPath[0] < roots.length) {
-      const subPath = focusPath.slice(1);
-      const counterpart = resolveSubPath(roots[focusPath[0]], subPath);
-      if (counterpart && counterpart.tagName === active.tagName) {
-        syncNonDisruptiveAttrs(active, counterpart);
-        counterpart.parentNode.replaceChild(active, counterpart);
-        spliced = true;
-      }
-    }
-
-    // Atomic container swap — old subtree out, new subtree (with the spliced
-    // live node, if any) in. Using replaceChildren batches the mutation so
-    // the focused live node transitions through at most one off-document
-    // tick, avoiding the full focus/blur/focus churn of the naive approach.
-    this._container.replaceChildren(...roots);
-    this._domNodes = roots;
-
-    // Some browsers drop focus when a node is temporarily detached during
-    // replaceChild. Re-asserting is cheap and a no-op when focus survived.
-    if (spliced && document.activeElement !== active && typeof active.focus === 'function') {
-      active.focus();
-    }
+    this._vtree = newVtree;
 
     this.onAfterRender(!this._hasRenderedBefore);
     this._hasRenderedBefore = true;
-  }
-}
-
-// Child-index path from `container` down to `node` (inclusive of node).
-// Returns null when node is not inside container.
-function computePath(node, container) {
-  const path = [];
-  let cur = node;
-  while (cur && cur !== container) {
-    const parent = cur.parentNode;
-    if (!parent) return null;
-    path.unshift(Array.prototype.indexOf.call(parent.childNodes, cur));
-    cur = parent;
-  }
-  return cur === container ? path : null;
-}
-
-// Walk `root` by child indices and return the descendant at the end.
-function resolveSubPath(root, subPath) {
-  let cur = root;
-  for (const i of subPath) {
-    if (!cur || !cur.childNodes || !cur.childNodes[i]) return null;
-    cur = cur.childNodes[i];
-  }
-  return cur;
-}
-
-// Copy attributes from the fresh element to the live element, but skip
-// properties that would disrupt editing on inputs. Specifically:
-//   * `value` — rewriting it would reset the caret to the end.
-//   * `selectionStart` / `selectionEnd` — not a real attribute but some
-//     inputs encode caret via properties; leaving them alone keeps caret.
-// Event listeners aren't touched; the live node keeps its existing handlers,
-// which close over the component instance and therefore still see current
-// state. A future diff pass can swap handlers when closures capture loop
-// variables.
-function syncNonDisruptiveAttrs(live, fresh) {
-  const tag = live.tagName;
-  const skip = (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT')
-    ? new Set(['value'])
-    : null;
-
-  // Remove attributes the fresh element no longer has.
-  for (const attr of Array.from(live.attributes)) {
-    if (skip?.has(attr.name)) continue;
-    if (!fresh.hasAttribute(attr.name)) live.removeAttribute(attr.name);
-  }
-  // Apply fresh attribute values where they differ.
-  for (const attr of Array.from(fresh.attributes)) {
-    if (skip?.has(attr.name)) continue;
-    if (live.getAttribute(attr.name) !== attr.value) {
-      live.setAttribute(attr.name, attr.value);
-    }
   }
 }
 

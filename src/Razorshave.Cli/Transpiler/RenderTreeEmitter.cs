@@ -235,6 +235,17 @@ internal static class RenderTreeEmitter
                 // already wired on `oninput` handles the round-trip.
                 return;
 
+            case "SetKey":
+                // Razor's `@key="@foo"` compiles to `__builder.SetKey(foo)`
+                // on the current element/component. We stash it as the special
+                // `key` prop — the JS runtime's `h()` hoists it to vnode.key
+                // for the reconciler's keyed list-matching.
+                if (args.Arguments.Count > 0 && frameStack.Count > 0)
+                {
+                    frameStack.Peek().Props.Add(("key", EmitExpression(args.Arguments[0].Expression, ctx)));
+                }
+                return;
+
             case "AddMarkupContent":
                 // Route through ExpressionEmitter so verbatim @"…" strings get
                 // re-emitted with JS-safe escaping (JSON.stringify). Writing

@@ -2,9 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { h, markup } from './h.js';
 
 describe('h()', () => {
-  it('produces a vnode with type, props, and children', () => {
+  it('produces a vnode with type, props, children, and key', () => {
     const v = h('div', { class: 'x' }, 'a', 'b');
-    expect(v).toEqual({ type: 'div', props: { class: 'x' }, children: ['a', 'b'] });
+    expect(v).toEqual({ type: 'div', props: { class: 'x' }, children: ['a', 'b'], key: null });
+  });
+
+  it('hoists props.key to vnode.key and strips it from props', () => {
+    const v = h('li', { key: 'item-7', class: 'row' }, 'x');
+    expect(v.key).toBe('item-7');
+    expect(v.props).toEqual({ class: 'row' });
   });
 
   it('defaults props to {} when null is passed', () => {
@@ -33,5 +39,14 @@ describe('h()', () => {
 describe('markup()', () => {
   it('produces a markup vnode carrying the raw html', () => {
     expect(markup('<b>x</b>')).toEqual({ type: '__markup__', html: '<b>x</b>' });
+  });
+});
+
+describe('h() key handling across types', () => {
+  it('component vnodes also get key hoisted', () => {
+    class C {}
+    const v = h(C, { key: 'a', x: 1 });
+    expect(v.key).toBe('a');
+    expect(v.props).toEqual({ x: 1 });
   });
 });

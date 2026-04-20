@@ -7,11 +7,24 @@
 //              (which return arrays) splice cleanly into the parent's child list
 
 export function h(type, props, ...children) {
+  // `key` is reconciler metadata (Razor's `@key`) — hoisted to the vnode top
+  // level so keyed-list matching doesn't have to dig into props on every
+  // diff step. Pulled out of props here so it doesn't bleed into HTML
+  // attributes either.
+  const key = props?.key ?? null;
+  const cleanProps = props ? stripKey(props) : {};
   return {
     type,
-    props: props || {},
+    props: cleanProps,
     children: flattenChildren(children),
+    key,
   };
+}
+
+function stripKey(props) {
+  if (!('key' in props)) return props;
+  const { key: _, ...rest } = props;
+  return rest;
 }
 
 // Wraps a raw HTML string so the renderer can insert it via a <template> clone
