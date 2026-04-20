@@ -71,6 +71,20 @@ export class Component {
     });
   }
 
+  // Returns a stable bound reference to a method on this instance. Used by
+  // the transpiler when rewriting `X.Event += this.Handler` — add and remove
+  // must hand the event source the SAME function reference, otherwise the
+  // unsubscribe silently misses and the listener leaks. Caching by method
+  // name guarantees the same bound fn every call.
+  _bound(name) {
+    if (!this._boundCache) this._boundCache = Object.create(null);
+    const cached = this._boundCache[name];
+    if (cached) return cached;
+    const fn = this[name];
+    if (typeof fn !== 'function') return undefined;
+    return this._boundCache[name] = fn.bind(this);
+  }
+
   // Resolves the `_injects` manifest (emitted by ClassEmitter for every
   // [Inject] property) against the DI container, assigning each service onto
   // this instance. Called by mount() for the root and by vdom.js for every
@@ -97,8 +111,16 @@ export class Component {
   // Fresh render → replace. Keyed DOM diffing is a later step; for M0 we nuke
   // the previous subtree and reinsert. Child component instances are kept
   // across rerenders via _childInstances so their state persists.
+  //
+  // A targeted focus-restore runs around the teardown: the naive replace
+  // would otherwise lose input focus (and caret position) on every keystroke
+  // that fires stateHasChanged — e.g. `@bind` on a text input becomes
+  // unusable. Capture the active element's path before teardown, then walk
+  // the new tree to the same path and re-focus afterwards.
   _rerender() {
     if (!this._container) return;
+
+    const focusSnapshot = captureFocus(this._container);
 
     for (const node of this._domNodes) {
       if (node.parentNode) node.parentNode.removeChild(node);
@@ -106,7 +128,10 @@ export class Component {
     this._domNodes = [];
 
     const produced = renderComponentTree(this);
-    if (produced === null) return;
+    if (produced === null) {
+      restoreFocus(this._container, focusSnapshot);
+      return;
+    }
 
     // Track roots for the next teardown. DocumentFragments splice their
     // children into the container directly, so snapshot them before append.
@@ -116,8 +141,53 @@ export class Component {
     this._container.appendChild(produced);
     this._domNodes = roots;
 
+    restoreFocus(this._container, focusSnapshot);
+
     this.onAfterRender(!this._hasRenderedBefore);
     this._hasRenderedBefore = true;
+  }
+}
+
+// Snapshot the focused element's position inside `container` (as a child-
+// index path) plus its caret selection. Returns null when focus is elsewhere
+// or not recoverable — the caller then treats the rerender as normal.
+function captureFocus(container) {
+  if (typeof document === 'undefined') return null;
+  const active = document.activeElement;
+  if (!active || !container.contains(active)) return null;
+
+  const path = [];
+  let cur = active;
+  while (cur && cur !== container) {
+    const parent = cur.parentNode;
+    if (!parent) return null;
+    path.unshift(Array.prototype.indexOf.call(parent.childNodes, cur));
+    cur = parent;
+  }
+  return {
+    path,
+    selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+    selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null,
+  };
+}
+
+function restoreFocus(container, snapshot) {
+  if (!snapshot) return;
+  let cur = container;
+  for (const i of snapshot.path) {
+    if (!cur || !cur.childNodes || !cur.childNodes[i]) return;
+    cur = cur.childNodes[i];
+  }
+  if (!cur || typeof cur.focus !== 'function') return;
+  cur.focus();
+  if (snapshot.selectionStart !== null && typeof cur.setSelectionRange === 'function') {
+    try {
+      cur.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd ?? snapshot.selectionStart);
+    } catch {
+      // Not every input type supports setSelectionRange (e.g. number, email
+      // in some browsers). Silent fallback — the focus itself already made
+      // typing recover.
+    }
   }
 }
 

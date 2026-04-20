@@ -65,9 +65,17 @@ export class Store {
 
   // Subscribe to change notifications. Returns an unsubscribe function so the
   // usual `onInit → subscribe, onDestroy → unsubscribe` dance is one line.
+  // For transpiled Razor components the returned fn is unused — the runtime
+  // calls `offChange(handler)` instead with the same bound reference.
   onChange(handler) {
     this._listeners.add(handler);
     return () => this._listeners.delete(handler);
+  }
+
+  // Symmetric counterpart for C# `event -=` transpilation. Passing the same
+  // function reference used in onChange() removes it; unknown refs are a no-op.
+  offChange(handler) {
+    this._listeners.delete(handler);
   }
 
   _notifyChange() {

@@ -24,15 +24,18 @@ public static class Transpiler
     /// equivalent. Returns an empty string when the source contains no
     /// recognised component class.
     /// </summary>
-    public static string Transpile(string source)
+    public static string Transpile(string source, IReadOnlyList<MetadataReference>? additionalReferences = null)
     {
         ArgumentNullException.ThrowIfNull(source);
 
         var tree = CSharpSyntaxTree.ParseText(source);
+        var references = additionalReferences is { Count: > 0 }
+            ? MetadataReferenceLoader.SharedFramework().Concat(additionalReferences).ToArray()
+            : MetadataReferenceLoader.SharedFramework();
         var compilation = CSharpCompilation.Create(
             assemblyName: "Razorshave.Transpile",
             syntaxTrees: [tree],
-            references: MetadataReferenceLoader.SharedFramework(),
+            references: references,
             options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
         var model = compilation.GetSemanticModel(tree);
 

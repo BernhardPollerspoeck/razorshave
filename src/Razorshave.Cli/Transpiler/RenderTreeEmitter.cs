@@ -228,6 +228,13 @@ internal static class RenderTreeEmitter
                 destStack.Peek().Add(new LiteralOp(EmitExpression(args.Arguments[1].Expression, ctx)));
                 return;
 
+            case "SetUpdatesAttributeName":
+                // Razor emits this alongside `@bind` as an internal hint for
+                // the Blazor renderer (tells it which attribute name should
+                // sync back to the model). No JS equivalent — the binder we
+                // already wired on `oninput` handles the round-trip.
+                return;
+
             case "AddMarkupContent":
                 // Route through ExpressionEmitter so verbatim @"…" strings get
                 // re-emitted with JS-safe escaping (JSON.stringify). Writing
@@ -251,6 +258,14 @@ internal static class RenderTreeEmitter
         }
 
         var valueExpr = args[2].Expression;
+        if (TryEmitBindValue(valueExpr, ctx, out var bindJs))
+        {
+            return bindJs;
+        }
+        if (TryEmitBindCallback(valueExpr, ctx, out var binderJs))
+        {
+            return binderJs;
+        }
         if (TryEmitEventHandler(addAttrInv, valueExpr, ctx, out var eventJs))
         {
             return eventJs;
@@ -260,6 +275,55 @@ internal static class RenderTreeEmitter
             return fragmentJs;
         }
         return EmitExpression(valueExpr, ctx);
+    }
+
+    // `@bind` on an input generates `BindConverter.FormatValue(expr)` — this
+    // is purely a .NET-side formatter call; in JS we just read `expr`, since
+    // the DOM does its own string coercion on attribute values.
+    private static bool TryEmitBindValue(ExpressionSyntax valueExpr, EmitContext ctx, out string js)
+    {
+        js = "";
+        if (valueExpr is not InvocationExpressionSyntax inv) return false;
+        if (inv.Expression is not MemberAccessExpressionSyntax mae) return false;
+        if (mae.Name.Identifier.Text != "FormatValue") return false;
+        if (StripGlobalAndNamespace(mae.Expression.ToString()) != "BindConverter") return false;
+        if (inv.ArgumentList.Arguments.Count == 0) return false;
+
+        js = EmitExpression(inv.ArgumentList.Arguments[0].Expression, ctx);
+        return true;
+    }
+
+    // `@bind`'s oninput slot generates
+    // `EventCallback.Factory.CreateBinder(this, __value => draft = __value, draft)`.
+    // We rewrite the assignment target out of the lambda and wrap it in a
+    // native-event adapter so the DOM handler fires the right setter. This
+    // keeps two-way binding working without pulling in any Blazor-runtime
+    // goo on the JS side.
+    private static bool TryEmitBindCallback(ExpressionSyntax valueExpr, EmitContext ctx, out string js)
+    {
+        js = "";
+        if (valueExpr is not InvocationExpressionSyntax inv) return false;
+        if (inv.Expression is not MemberAccessExpressionSyntax mae) return false;
+        if (mae.Name.Identifier.Text != "CreateBinder") return false;
+        if (StripGlobalAndNamespace(mae.Expression.ToString()) != "Factory") return false;
+        if (inv.ArgumentList.Arguments.Count < 2) return false;
+
+        var setterExpr = inv.ArgumentList.Arguments[1].Expression;
+        // Razor always emits a simple `__value => target = __value`. We extract
+        // the target so we can assign to it directly in a native handler —
+        // re-emitting the lambda body would route through identifier-rewriting
+        // which does exactly that.
+        if (setterExpr is SimpleLambdaExpressionSyntax { Body: AssignmentExpressionSyntax asn })
+        {
+            var target = EmitExpression(asn.Left, ctx);
+            js = $"(e) => {target} = e.target.value";
+            return true;
+        }
+
+        // Fallback: emit the lambda as-is and invoke it with `e.target.value`.
+        var lambdaJs = EmitExpression(setterExpr, ctx);
+        js = $"(e) => ({lambdaJs})(e.target.value)";
+        return true;
     }
 
     private static bool TryEmitEventHandler(
@@ -286,10 +350,21 @@ internal static class RenderTreeEmitter
         }
         var handlerExpr = createInv.ArgumentList.Arguments[1].Expression;
 
+        // Lambdas (`() => Toggle(id)`, `e => DoThing(e)`) are already full
+        // event handlers — emit them directly. Method references
+        // (`IncrementCount`, `this.HandleClick`) need wrapping so the native
+        // `e` becomes the typed EventArgs the method expects.
         var resolvedHandler = new StringBuilder();
         ExpressionEmitter.Emit(handlerExpr, resolvedHandler, ctx);
 
-        handlerJs = $"(e) => {resolvedHandler}(new {eventArgsType}(e))";
+        if (handlerExpr is LambdaExpressionSyntax)
+        {
+            handlerJs = resolvedHandler.ToString();
+        }
+        else
+        {
+            handlerJs = $"(e) => {resolvedHandler}(new {eventArgsType}(e))";
+        }
         return true;
     }
 

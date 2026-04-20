@@ -1,0 +1,128 @@
+using System.Text;
+
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+
+namespace Razorshave.Cli.Transpiler;
+
+/// <summary>
+/// Rewrites calls and field accesses on well-known BCL types into their JS
+/// equivalents. Without this, expressions like <c>string.Empty</c> or
+/// <c>Guid.NewGuid()</c> would emit as literal JS that references undefined
+/// globals (<c>string</c>, <c>Guid</c>) and crash at load time.
+/// </summary>
+/// <remarks>
+/// Matching is syntactic (identifier + predefined-type text) rather than
+/// semantic. That means a user class happening to be called <c>Guid</c> would
+/// also match — acceptable trade-off at M0, and the <see cref="EmitContext"/>
+/// is threaded through so a future semantic upgrade stays surgical.
+/// </remarks>
+internal static class StaticMemberRewrites
+{
+    /// <summary>
+    /// If <paramref name="mae"/> is a bare member access on a known static
+    /// type (e.g. <c>string.Empty</c>), write the JS equivalent to
+    /// <paramref name="sb"/> and return <c>true</c>. Otherwise return
+    /// <c>false</c> so the caller can fall through to generic emission.
+    /// </summary>
+    public static bool TryRewriteMemberAccess(MemberAccessExpressionSyntax mae, StringBuilder sb, EmitContext ctx)
+    {
+        _ = ctx;
+        if (!TryGetStaticReceiver(mae.Expression, out var typeName)) return false;
+        var memberName = mae.Name.Identifier.Text;
+
+        switch ((typeName, memberName))
+        {
+            case ("string", "Empty"):
+            case ("String", "Empty"):
+                sb.Append("\"\"");
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// If <paramref name="inv"/> is a call to a known static method (e.g.
+    /// <c>string.IsNullOrWhiteSpace(x)</c>, <c>Guid.NewGuid()</c>), write the
+    /// JS equivalent to <paramref name="sb"/> and return <c>true</c>.
+    /// Otherwise return <c>false</c>.
+    /// </summary>
+    public static bool TryRewriteInvocation(InvocationExpressionSyntax inv, StringBuilder sb, EmitContext ctx)
+    {
+        if (inv.Expression is not MemberAccessExpressionSyntax mae) return false;
+
+        // LINQ `.Count()` on any receiver → `.length`. Kept syntactic so it
+        // also picks up user-defined enumerables whose JS representation is an
+        // array. The property form `.Count` (no parens) hits IStore<T>.count
+        // directly, which is already correct.
+        if (inv.ArgumentList.Arguments.Count == 0 && mae.Name.Identifier.Text == "Count")
+        {
+            ExpressionEmitter.Emit(mae.Expression, sb, ctx);
+            sb.Append(".length");
+            return true;
+        }
+
+        // `.ToString()` on strings/numbers/guids is a no-op in JS (implicit
+        // coercion handles display). Drop the call so `crypto.randomUUID().toString()`
+        // collapses cleanly and doesn't invoke JS's Object.prototype.toString.
+        if (inv.ArgumentList.Arguments.Count == 0 && mae.Name.Identifier.Text == "ToString")
+        {
+            ExpressionEmitter.Emit(mae.Expression, sb, ctx);
+            return true;
+        }
+
+        if (!TryGetStaticReceiver(mae.Expression, out var typeName)) return false;
+        var memberName = mae.Name.Identifier.Text;
+        var args = inv.ArgumentList.Arguments;
+
+        switch ((typeName, memberName))
+        {
+            case ("string", "IsNullOrWhiteSpace"):
+            case ("String", "IsNullOrWhiteSpace"):
+                if (args.Count != 1) return false;
+                sb.Append('(');
+                ExpressionEmitter.Emit(args[0].Expression, sb, ctx);
+                sb.Append(" == null || ");
+                ExpressionEmitter.Emit(args[0].Expression, sb, ctx);
+                sb.Append(".trim() === \"\")");
+                return true;
+
+            case ("string", "IsNullOrEmpty"):
+            case ("String", "IsNullOrEmpty"):
+                if (args.Count != 1) return false;
+                sb.Append('(');
+                ExpressionEmitter.Emit(args[0].Expression, sb, ctx);
+                sb.Append(" == null || ");
+                ExpressionEmitter.Emit(args[0].Expression, sb, ctx);
+                sb.Append(" === \"\")");
+                return true;
+
+            case ("Guid", "NewGuid"):
+                sb.Append("crypto.randomUUID()");
+                return true;
+        }
+
+        return false;
+    }
+
+    // Recognises both `string.X` (PredefinedType keyword) and `Guid.X`
+    // (bare identifier). Bare identifiers follow the convention that
+    // PascalCase names that aren't class members reference types — the
+    // same heuristic ExpressionEmitter uses when choosing between
+    // `this.x` and bare `x`.
+    private static bool TryGetStaticReceiver(ExpressionSyntax expr, out string typeName)
+    {
+        switch (expr)
+        {
+            case PredefinedTypeSyntax pt:
+                typeName = pt.Keyword.Text;
+                return true;
+            case IdentifierNameSyntax id when id.Identifier.Text.Length > 0 && char.IsUpper(id.Identifier.Text[0]):
+                typeName = id.Identifier.Text;
+                return true;
+            default:
+                typeName = "";
+                return false;
+        }
+    }
+}

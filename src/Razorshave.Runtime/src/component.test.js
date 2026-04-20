@@ -81,6 +81,47 @@ describe('Component', () => {
   });
 });
 
+describe('focus preservation across rerenders', () => {
+  it('keeps input focus and caret after stateHasChanged', async () => {
+    // Regression: typing into an @bind input used to lose focus after every
+    // keystroke because _rerender tore down the whole subtree. Focus is
+    // restored by walking the same child-index path in the new tree.
+    class Typer extends Component {
+      constructor() { super(); this.text = ''; }
+      render() {
+        return h('div', null,
+          h('input', {
+            type: 'text',
+            value: this.text,
+            oninput: (e) => { this.text = e.target.value; },
+          }),
+          h('p', null, 'echo: ', this.text)
+        );
+      }
+    }
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    mount(Typer, container);
+
+    const input = container.querySelector('input');
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    input.value = 'ha';
+    input.setSelectionRange(2, 2);
+    input.dispatchEvent(new Event('input'));
+    await nextFrame();
+    await nextFrame();
+
+    const newInput = container.querySelector('input');
+    expect(document.activeElement).toBe(newInput);
+    expect(newInput.selectionStart).toBe(2);
+    expect(container.querySelector('p').textContent).toBe('echo: ha');
+
+    document.body.removeChild(container);
+  });
+});
+
 describe('LayoutComponent', () => {
   it('exposes props.body via the body getter', () => {
     const layout = new LayoutComponent();

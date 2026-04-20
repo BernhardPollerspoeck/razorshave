@@ -1,5 +1,6 @@
 using System.Text;
 
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace Razorshave.Cli.Transpiler;
@@ -73,17 +74,20 @@ internal static class ExpressionEmitter
                 break;
 
             case AssignmentExpressionSyntax assign:
+                if (TryEmitEventSubscription(assign, sb, ctx)) break;
                 Emit(assign.Left, sb, ctx);
                 sb.Append(' ').Append(assign.OperatorToken.Text).Append(' ');
                 Emit(assign.Right, sb, ctx);
                 break;
 
             case MemberAccessExpressionSyntax mae:
+                if (StaticMemberRewrites.TryRewriteMemberAccess(mae, sb, ctx)) break;
                 Emit(mae.Expression, sb, ctx);
                 sb.Append('.').Append(NameConventions.ToCamelCase(mae.Name.Identifier.Text));
                 break;
 
             case InvocationExpressionSyntax inv:
+                if (StaticMemberRewrites.TryRewriteInvocation(inv, sb, ctx)) break;
                 Emit(inv.Expression, sb, ctx);
                 sb.Append('(');
                 for (var i = 0; i < inv.ArgumentList.Arguments.Count; i++)
@@ -99,16 +103,205 @@ internal static class ExpressionEmitter
                 Emit(aw.Expression, sb, ctx);
                 break;
 
+            case SimpleLambdaExpressionSyntax simple:
+                // `x => expr` → `(x) => expr`. JS arrow functions are a clean
+                // 1:1 mapping for C# lambdas; only block bodies need special
+                // handling (StatementEmitter), and those only appear in
+                // RenderFragment delegates which have their own emitter path.
+                sb.Append('(').Append(simple.Parameter.Identifier.Text).Append(") => ");
+                EmitLambdaBody(simple.Body, sb, ctx);
+                break;
+
+            case ParenthesizedLambdaExpressionSyntax paren2:
+                sb.Append('(');
+                for (var i = 0; i < paren2.ParameterList.Parameters.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    sb.Append(paren2.ParameterList.Parameters[i].Identifier.Text);
+                }
+                sb.Append(") => ");
+                EmitLambdaBody(paren2.Body, sb, ctx);
+                break;
+
             case ParenthesizedExpressionSyntax paren:
                 sb.Append('(');
                 Emit(paren.Expression, sb, ctx);
                 sb.Append(')');
                 break;
 
+            case ConditionalExpressionSyntax cond:
+                // C# and JS ternary share exact syntax — direct one-to-one
+                // mapping. Each operand still goes through Emit so nested
+                // rewrites (static members, object initialisers) apply.
+                Emit(cond.Condition, sb, ctx);
+                sb.Append(" ? ");
+                Emit(cond.WhenTrue, sb, ctx);
+                sb.Append(" : ");
+                Emit(cond.WhenFalse, sb, ctx);
+                break;
+
+            case ObjectCreationExpressionSyntax oc:
+                // `new TodoItem { Id = x, Text = y }` → `{ id: x, text: y }`.
+                // We intentionally drop the type name — records and POCO-style
+                // classes emit as plain JS object literals at runtime. Keys
+                // match the C# property names, camel-cased so they line up
+                // with how the rest of the emitter renames identifiers.
+                // Positional `new TodoItem(x, y)` is not supported here yet
+                // — records in M0 use object initialisers.
+                if (oc.Initializer is not null)
+                {
+                    EmitObjectInitializer(oc.Initializer, sb, ctx);
+                }
+                else
+                {
+                    sb.Append("{}");
+                }
+                break;
+
+            case ImplicitObjectCreationExpressionSyntax implicitOc:
+                // `new() { Id = x }` — the target type is implicit, emission
+                // is identical to the explicit form.
+                if (implicitOc.Initializer is not null)
+                {
+                    EmitObjectInitializer(implicitOc.Initializer, sb, ctx);
+                }
+                else
+                {
+                    sb.Append("{}");
+                }
+                break;
+
+            case WithExpressionSyntax with:
+                // `record with { Done = !x.Done }` → `{ ...record, done: !x.done }`.
+                // The spread preserves all existing keys, then the initialiser
+                // overwrites the ones the user listed.
+                sb.Append("{ ...");
+                Emit(with.Expression, sb, ctx);
+                foreach (var assignExpr in with.Initializer.Expressions)
+                {
+                    if (assignExpr is AssignmentExpressionSyntax a && a.Left is IdentifierNameSyntax leftId)
+                    {
+                        sb.Append(", ").Append(NameConventions.ToCamelCase(leftId.Identifier.Text)).Append(": ");
+                        Emit(a.Right, sb, ctx);
+                    }
+                }
+                sb.Append(" }");
+                break;
+
             default:
                 sb.Append("/* TODO: ").Append(expr.Kind()).Append(" */ null");
                 break;
         }
+    }
+
+    // `Store.OnChange += StateHasChanged` / `Store.OnChange -= StateHasChanged`
+    // rewrites via the runtime's `_bound(name)` helper. We use SemanticModel
+    // to confirm the LHS's member is an `event` so ordinary += assignments
+    // (e.g. `counter += 1`) keep their native JS form. The same bound handler
+    // reference is used on +/−, so unsubscribe actually cancels the subscribe.
+    private static bool TryEmitEventSubscription(AssignmentExpressionSyntax assign, StringBuilder sb, EmitContext ctx)
+    {
+        var kind = assign.Kind();
+        if (kind != SyntaxKind.AddAssignmentExpression && kind != SyntaxKind.SubtractAssignmentExpression)
+        {
+            return false;
+        }
+        if (assign.Left is not MemberAccessExpressionSyntax mae) return false;
+
+        if (ctx.Model.GetSymbolInfo(mae).Symbol is not Microsoft.CodeAnalysis.IEventSymbol eventSym)
+        {
+            return false;
+        }
+
+        // `OnChange` → subscribe `onChange` / unsubscribe `offChange`. The
+        // event naming convention (leading `On`) lets us form a natural
+        // off-pair by swapping the prefix. Without the `On` prefix we fall
+        // back to prepending raw `off`.
+        var eventName = eventSym.Name;
+        string subscribe, unsubscribe;
+        if (eventName.StartsWith("On", StringComparison.Ordinal) && eventName.Length > 2)
+        {
+            subscribe = NameConventions.ToCamelCase(eventName);
+            unsubscribe = "off" + eventName[2..];
+        }
+        else
+        {
+            subscribe = NameConventions.ToCamelCase(eventName);
+            unsubscribe = "off" + eventName;
+        }
+
+        Emit(mae.Expression, sb, ctx);
+        sb.Append('.').Append(kind == SyntaxKind.AddAssignmentExpression ? subscribe : unsubscribe).Append('(');
+        EmitBoundHandler(assign.Right, sb, ctx);
+        sb.Append(')');
+        return true;
+    }
+
+    // Normalises a handler reference (`StateHasChanged` or `this.StateHasChanged`)
+    // into `this._bound('stateHasChanged')` so add/remove use the same ref.
+    // Lambdas are passed through verbatim — the user took responsibility.
+    private static void EmitBoundHandler(ExpressionSyntax handler, StringBuilder sb, EmitContext ctx)
+    {
+        string? methodName = handler switch
+        {
+            IdentifierNameSyntax id => id.Identifier.Text,
+            MemberAccessExpressionSyntax mae when mae.Expression is ThisExpressionSyntax
+                => mae.Name.Identifier.Text,
+            _ => null,
+        };
+        if (methodName is not null)
+        {
+            sb.Append("this._bound('").Append(NameConventions.ToCamelCase(methodName)).Append("')");
+            return;
+        }
+        Emit(handler, sb, ctx);
+    }
+
+    private static void EmitLambdaBody(CSharpSyntaxNode body, StringBuilder sb, EmitContext ctx)
+    {
+        switch (body)
+        {
+            case ExpressionSyntax exprBody:
+                Emit(exprBody, sb, ctx);
+                return;
+            case BlockSyntax blockBody:
+                sb.Append('{');
+                // RenderFragment-style lambdas with __builder bodies never reach
+                // here (RenderTreeEmitter intercepts them). For user-written
+                // block lambdas we delegate to StatementEmitter with a one-space
+                // indent to keep the output readable in a single line.
+                foreach (var stmt in blockBody.Statements)
+                {
+                    var inner = new StringBuilder();
+                    StatementEmitter.Emit(stmt, inner, ctx, indent: " ");
+                    sb.Append(inner.ToString().TrimEnd('\n'));
+                }
+                sb.Append(" }");
+                return;
+            default:
+                sb.Append("/* TODO: lambda body ").Append(body.Kind()).Append(" */ null");
+                return;
+        }
+    }
+
+    // Emits `{ key1: value1, key2: value2 }` from an ObjectInitializerExpression
+    // whose children are assignment expressions. Keys are camel-cased so they
+    // match the rest of the transpiler's member naming.
+    private static void EmitObjectInitializer(InitializerExpressionSyntax init, StringBuilder sb, EmitContext ctx)
+    {
+        sb.Append("{ ");
+        var first = true;
+        foreach (var expr in init.Expressions)
+        {
+            if (expr is AssignmentExpressionSyntax assign && assign.Left is IdentifierNameSyntax leftId)
+            {
+                if (!first) sb.Append(", ");
+                first = false;
+                sb.Append(NameConventions.ToCamelCase(leftId.Identifier.Text)).Append(": ");
+                Emit(assign.Right, sb, ctx);
+            }
+        }
+        sb.Append(" }");
     }
 
     private static void EmitIdentifier(string name, StringBuilder sb, EmitContext ctx)

@@ -37,7 +37,7 @@ internal static class ClassEmitter
             switch (member)
             {
                 case FieldDeclarationSyntax field:
-                    FieldEmitter.Emit(field, sb);
+                    FieldEmitter.Emit(field, sb, ctx);
                     break;
 
                 case PropertyDeclarationSyntax prop when HasInjectAttribute(prop):
@@ -45,7 +45,7 @@ internal static class ClassEmitter
                     break;
 
                 case PropertyDeclarationSyntax prop:
-                    PropertyEmitter.Emit(prop, sb);
+                    PropertyEmitter.Emit(prop, sb, ctx);
                     break;
 
                 case MethodDeclarationSyntax method when method.Identifier.Text == "BuildRenderTree":
@@ -145,6 +145,11 @@ internal static class ClassEmitter
 
     private static void AddInheritedMembers(ClassDeclarationSyntax component, HashSet<string> names)
     {
+        // Every Razor ComponentBase/LayoutComponentBase inherits StateHasChanged.
+        // Without this entry, a bare `StateHasChanged` identifier in user code
+        // would emit as a global reference and crash with "is not defined".
+        names.Add("StateHasChanged");
+
         if (component.BaseList is null) return;
 
         var baseName = component.BaseList.Types[0].Type.ToString();

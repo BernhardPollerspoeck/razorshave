@@ -31,7 +31,7 @@ internal static class MethodEmitter
             return;
         }
 
-        var name = NameConventions.ToCamelCase(method.Identifier.Text);
+        var name = MapLifecycleName(method.Identifier.Text) ?? NameConventions.ToCamelCase(method.Identifier.Text);
         var isAsync = method.Modifiers.Any(m => m.ValueText == "async");
         var parameters = string.Join(", ", method.ParameterList.Parameters.Select(p => p.Identifier.Text));
 
@@ -56,4 +56,19 @@ internal static class MethodEmitter
 
         sb.Append(ClassEmitter.Indent).Append("}\n");
     }
+
+    // Blazor lifecycle names ≠ Razorshave runtime names. Without this map
+    // `OnInitialized` transpiles to `onInitialized`, which the runtime never
+    // invokes — user-written setup silently doesn't run. Returning null
+    // falls back to the camelCase default so non-lifecycle methods keep
+    // their natural name.
+    private static string? MapLifecycleName(string csharpName)
+        => csharpName switch
+        {
+            "OnInitialized"       => "onInit",
+            "OnParametersSet"     => "onPropsChanged",
+            "OnParametersSetAsync" => "onPropsChangedAsync",
+            "Dispose"             => "onDestroy",
+            _                     => null,
+        };
 }

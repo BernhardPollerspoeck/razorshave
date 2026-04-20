@@ -78,7 +78,7 @@ internal static class BuildCommand
         Directory.CreateDirectory(distDir);
 
         Console.WriteLine("[2/6] Transpiling components ...");
-        var (components, routesConfig) = TranspileAll(generatedRoot, distDir);
+        var (components, routesConfig) = TranspileAll(generatedRoot, distDir, absProject, configuration);
         if (components.Count == 0)
         {
             Console.Error.WriteLine("razorshave: no component classes found");
@@ -163,10 +163,17 @@ internal static class BuildCommand
         IReadOnlyList<string> RoutePatterns);
 
     private static (List<TranspiledComponent> components, RouteExtractor.RoutesConfig routesConfig)
-        TranspileAll(string generatedRoot, string distDir)
+        TranspileAll(string generatedRoot, string distDir, string projectDir, string configuration)
     {
         var components = new List<TranspiledComponent>();
         var routesConfig = RouteExtractor.RoutesConfig.Empty;
+
+        // Feed the user project's referenced assemblies into every per-file
+        // compilation. Without this, SemanticModel can't resolve types like
+        // `IStore<T>` from Razorshave.Abstractions — event-symbol detection
+        // silently falls through and patterns like `Store.OnChange += X`
+        // stay as raw C# text in the JS output.
+        var projectRefs = LoadProjectBinReferences(projectDir, configuration);
 
         foreach (var genFile in Directory.EnumerateFiles(generatedRoot, "*_razor.g.cs", SearchOption.AllDirectories))
         {
@@ -186,7 +193,7 @@ internal static class BuildCommand
                 continue;
             }
 
-            var js = Transpile(source);
+            var js = Transpile(source, projectRefs);
             if (string.IsNullOrWhiteSpace(js)) continue;
 
             var outFile = Path.Combine(distDir, $"{className}.js");
@@ -199,6 +206,23 @@ internal static class BuildCommand
         return (
             components.OrderBy(c => c.Name, StringComparer.Ordinal).ToList(),
             routesConfig);
+    }
+
+    private static List<MetadataReference> LoadProjectBinReferences(string projectDir, string configuration)
+    {
+        // Scan the user project's output bin for DLLs other than the SDK-shared
+        // ones (those already live in MetadataReferenceLoader.SharedFramework()).
+        // This is a pragmatic stand-in for reading @(ReferencePath) from MSBuild;
+        // revisit if the signal gets noisy.
+        var binDir = Path.Combine(projectDir, "bin", configuration, "net10.0");
+        if (!Directory.Exists(binDir)) return [];
+        var refs = new List<MetadataReference>();
+        foreach (var dll in Directory.GetFiles(binDir, "*.dll", SearchOption.TopDirectoryOnly))
+        {
+            try { refs.Add(MetadataReference.CreateFromFile(dll)); }
+            catch { /* unreadable dll — skip */ }
+        }
+        return refs;
     }
 
     private static ClassDeclarationSyntax? FindComponentClass(SyntaxTree tree)

@@ -6,31 +6,36 @@ namespace Razorshave.Cli.Transpiler;
 
 /// <summary>
 /// Emits a single C# field declaration as one or more JS class fields.
+/// Initializers are routed through <see cref="ExpressionEmitter"/> so static
+/// rewrites (e.g. <c>string.Empty</c> → <c>""</c>) apply uniformly — a raw
+/// <c>.ToString()</c> would emit source text that references undefined JS
+/// globals and crash at class instantiation.
 /// </summary>
 /// <remarks>
-/// Scope (5.4):
-/// <list type="bullet">
-///   <item>A <see cref="FieldDeclarationSyntax"/> may declare multiple
-///     variables (<c>private int a = 0, b = 1;</c>). Each gets its own JS line.</item>
-///   <item>Initializer present → emit as-is (literal text). Only tested against
-///     simple literals so far; complex expressions will need their own walker.</item>
-///   <item>No initializer → emit <c>= null</c> for behavioural parity with C#'s
-///     default(T) on reference and nullable types. Primitive-default edge cases
-///     (e.g. an uninitialised <c>int</c>) are acceptable noise in M0 — revisit
-///     when a fixture forces the question.</item>
-/// </list>
+/// A <see cref="FieldDeclarationSyntax"/> may declare multiple variables
+/// (<c>private int a = 0, b = 1;</c>). Each gets its own JS line.
+/// Missing initializers emit <c>= null</c> — behavioural parity with C#'s
+/// <c>default(T)</c> on reference and nullable types is good enough for M0;
+/// a SemanticModel-aware default-for-value-types pass can come later.
 /// </remarks>
 internal static class FieldEmitter
 {
-    public static void Emit(FieldDeclarationSyntax field, StringBuilder sb)
+    public static void Emit(FieldDeclarationSyntax field, StringBuilder sb, EmitContext ctx)
     {
         foreach (var variable in field.Declaration.Variables)
         {
             var name = variable.Identifier.Text;
-            var initializer = variable.Initializer?.Value.ToString() ?? "null";
 
-            sb.Append(ClassEmitter.Indent)
-              .Append(name).Append(" = ").Append(initializer).Append(";\n");
+            sb.Append(ClassEmitter.Indent).Append(name).Append(" = ");
+            if (variable.Initializer is not null)
+            {
+                ExpressionEmitter.Emit(variable.Initializer.Value, sb, ctx);
+            }
+            else
+            {
+                sb.Append("null");
+            }
+            sb.Append(";\n");
         }
     }
 }
