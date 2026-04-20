@@ -1,14 +1,18 @@
 import { kickoffAsyncInit } from './component.js';
+import { reportRuntimeError } from './errors.js';
 
 // Naive vnode → DOM renderer. Each call produces a fresh tree; re-rendering
 // on state change replaces the whole subtree via the Component base class.
 // Keyed DOM diffing is intentionally deferred — correctness first, perf later.
 //
 // Child-component instance reuse: when a parent re-renders, its previous
-// child-component instances are kept around in parent._childInstances (indexed
-// by Ctor). renderComponentTree swaps that into _prevChildrenForThisRender
-// before calling render(), so any h(Ctor, …) reached inside the tree resolves
-// to the reused instance. State on those child components survives.
+// child-component instances are kept around in parent._childInstances as
+// Map<Ctor, Array<instance>> — one array per Ctor, ordered by the order the
+// children were first encountered. renderComponentTree swaps that into
+// _prevChildrenForThisRender before calling render(), so any h(Ctor, …)
+// reached inside the tree can look up its previous instance at the same
+// (Ctor, occurrence-index) slot. State on those child components survives,
+// including when two siblings of the same type sit on the same page.
 //
 // owner is the Component whose render() produced the vnode. Event handlers
 // escape back to it via stateHasChanged() once their handler returns.
@@ -61,22 +65,24 @@ export function render(vnode, owner) {
 export function renderComponentTree(instance) {
   instance._prevChildrenForThisRender = instance._childInstances;
   instance._childInstances = new Map();
+  instance._nextChildIndex = new Map();
   const tree = instance.render?.();
   return render(tree, instance);
 }
 
-// Look up <Ctor> among the parent's previous-render children; reuse if
-// present (updating props, firing onPropsChanged), otherwise create fresh and
-// kick off its full lifecycle (resolve injects, onInit, async-init).
+// Look up <Ctor> among the parent's previous-render children at the current
+// (Ctor, occurrence-index) slot; reuse if present (updating props, firing
+// onPropsChanged), otherwise create fresh and kick off its full lifecycle
+// (resolve injects, onInit, async-init).
 function resolveChildInstance(Ctor, props, children, owner) {
   const prevMap = owner?._prevChildrenForThisRender;
-  const reusable = prevMap?.get(Ctor);
+  const prevArr = prevMap?.get(Ctor);
+  const index = owner?._nextChildIndex?.get(Ctor) ?? 0;
+  owner?._nextChildIndex?.set(Ctor, index + 1);
+  const reusable = prevArr?.[index];
 
   let instance;
   if (reusable) {
-    // Consume so a second h(Ctor, …) in the same render creates a new one
-    // instead of colliding with the reused instance.
-    prevMap.delete(Ctor);
     instance = reusable;
     instance.props = props || {};
     instance._childrenArg = children;
@@ -93,9 +99,15 @@ function resolveChildInstance(Ctor, props, children, owner) {
     kickoffAsyncInit(instance);
   }
 
-  // Record on the parent so the NEXT render can find this instance.
+  // Record on the parent so the NEXT render can find this instance at the
+  // same slot.
   if (owner?._childInstances) {
-    owner._childInstances.set(Ctor, instance);
+    let arr = owner._childInstances.get(Ctor);
+    if (!arr) {
+      arr = [];
+      owner._childInstances.set(Ctor, arr);
+    }
+    arr[index] = instance;
   }
   return instance;
 }
@@ -118,7 +130,9 @@ function applyProps(el, props, owner) {
 
 // Runs the user's event handler and then notifies the owning component so the
 // UI refreshes. Async handlers are awaited so a Task-returning C# method
-// finishes before the re-render, matching Blazor's behaviour.
+// finishes before the re-render, matching Blazor's behaviour. Thrown errors
+// (sync or async) are routed through reportRuntimeError so they surface with
+// component context instead of becoming invisible unhandled rejections.
 function wrapHandler(userHandler, owner) {
   return async function (nativeEvent) {
     try {
@@ -126,6 +140,11 @@ function wrapHandler(userHandler, owner) {
       if (result && typeof result.then === 'function') {
         await result;
       }
+    } catch (err) {
+      reportRuntimeError(err, {
+        phase: 'event handler',
+        component: owner?.constructor?.name,
+      });
     } finally {
       owner?.stateHasChanged?.();
     }

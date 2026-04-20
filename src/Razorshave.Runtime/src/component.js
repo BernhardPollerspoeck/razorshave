@@ -1,5 +1,6 @@
 import { renderComponentTree } from './vdom.js';
 import { container } from './container.js';
+import { reportRuntimeError } from './errors.js';
 
 // Module-level reference to the mounted root component. Child components
 // can't rerender themselves (they have no _container of their own under the
@@ -18,11 +19,14 @@ export function setActiveRoot(instance) {
 // the event-handler wrapper in vdom.js) calls stateHasChanged() to queue a
 // rerender on the next frame.
 //
-// Child-instance reuse: every Component holds a Map of its last render's
-// child components keyed by their class. When the parent re-renders, vdom.js
-// looks the class up in the parent's previous map; if found, the instance is
-// reused (props updated, state preserved). That's what keeps Counter's
-// currentCount alive across parent rerenders without a full reconciler.
+// Child-instance reuse: every Component holds a Map<Ctor, Array<instance>> of
+// its last render's child components — one array per Ctor, ordered by
+// render-occurrence. When the parent re-renders, vdom.js walks the previous
+// array at the same (Ctor, index) slot; if found, the instance is reused
+// (props updated, state preserved). Keying by index (not just by Ctor) is
+// what lets two <Counter /> siblings keep independent state — without it,
+// both would collide on the same map key and the second render's counter
+// would steal the first's instance.
 
 export class Component {
   constructor() {
@@ -32,11 +36,14 @@ export class Component {
     this._renderScheduled = false;
     this._hasRenderedBefore = false;
 
-    // Child components from the most recent render. Vdom.js replaces this
-    // with a fresh Map on each render and looks into the previous one via
-    // _prevChildrenForThisRender to decide reuse-vs-create.
+    // Child components from the most recent render, bucketed by Ctor. Vdom.js
+    // replaces this with a fresh Map on each render and looks into the
+    // previous one via _prevChildrenForThisRender to decide reuse-vs-create.
     this._childInstances = new Map();
     this._prevChildrenForThisRender = null;
+    // Per-render counter of how many times each Ctor has appeared so far in
+    // the current render pass. Reset at the top of renderComponentTree.
+    this._nextChildIndex = new Map();
   }
 
   render() {
@@ -117,11 +124,27 @@ export class Component {
 // Called by vdom.js whenever a component is first instantiated (root via
 // _lifecycleStart, children via the reuse path in renderComponentVnode).
 // Bubbles stateHasChanged back when the promise resolves so the UI picks up
-// any state the async hook set.
+// any state the async hook set. Synchronous throws and async rejections are
+// routed through reportRuntimeError — we still call stateHasChanged so any
+// partial state the hook set before failing paints, and an error boundary
+// (once we have one) can render.
 export function kickoffAsyncInit(instance) {
-  const p = instance.onInitializedAsync?.();
+  let p;
+  try {
+    p = instance.onInitializedAsync?.();
+  } catch (err) {
+    reportRuntimeError(err, { phase: 'onInitializedAsync', component: instance.constructor?.name });
+    instance.stateHasChanged?.();
+    return;
+  }
   if (p && typeof p.then === 'function') {
-    p.then(() => instance.stateHasChanged?.());
+    p.then(
+      () => instance.stateHasChanged?.(),
+      (err) => {
+        reportRuntimeError(err, { phase: 'onInitializedAsync', component: instance.constructor?.name });
+        instance.stateHasChanged?.();
+      }
+    );
   }
 }
 

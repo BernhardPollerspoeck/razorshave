@@ -1,0 +1,87 @@
+// Reactive key/value store — one Store per Razor generic `IStore<T>`. A
+// component injects `IStore<User> Users`, mutates via set/delete/clear, and
+// subscribes via onChange() to be notified when anything in the store
+// changes. The container auto-creates a singleton Store for every unique
+// `IStore<…>` key it sees, so apps get shared state for free without any
+// registration boilerplate.
+//
+// Mirrors the IStore<T> surface specified in RAZORSHAVE-RUNTIME-API.md.
+// Notifications are coarse — any mutation fires every listener once — which
+// is intentional for the M0/v0.1 scope and matches Blazor StateHasChanged
+// semantics.
+
+export class Store {
+  constructor() {
+    this._data = new Map();
+    this._listeners = new Set();
+    this._batchDepth = 0;
+    this._batchDirty = false;
+  }
+
+  get(key) { return this._data.get(key); }
+
+  set(key, value) {
+    this._data.set(key, value);
+    this._notifyChange();
+  }
+
+  delete(key) {
+    const existed = this._data.delete(key);
+    if (existed) this._notifyChange();
+    return existed;
+  }
+
+  has(key) { return this._data.has(key); }
+
+  getAll() { return Array.from(this._data.values()); }
+
+  where(predicate) {
+    return Array.from(this._data.values()).filter(predicate);
+  }
+
+  clear() {
+    if (this._data.size === 0) return;
+    this._data.clear();
+    this._notifyChange();
+  }
+
+  get count() { return this._data.size; }
+
+  // Runs `updates` with change notifications suppressed and emits a single
+  // change at the end if anything actually mutated. Supports nesting — only
+  // the outermost batch flushes.
+  batch(updates) {
+    this._batchDepth++;
+    try {
+      updates();
+    } finally {
+      this._batchDepth--;
+      if (this._batchDepth === 0 && this._batchDirty) {
+        this._batchDirty = false;
+        this._emitChange();
+      }
+    }
+  }
+
+  // Subscribe to change notifications. Returns an unsubscribe function so the
+  // usual `onInit → subscribe, onDestroy → unsubscribe` dance is one line.
+  onChange(handler) {
+    this._listeners.add(handler);
+    return () => this._listeners.delete(handler);
+  }
+
+  _notifyChange() {
+    if (this._batchDepth > 0) {
+      this._batchDirty = true;
+      return;
+    }
+    this._emitChange();
+  }
+
+  _emitChange() {
+    // Snapshot the listener set — handlers may unsubscribe during dispatch.
+    for (const listener of Array.from(this._listeners)) {
+      listener();
+    }
+  }
+}

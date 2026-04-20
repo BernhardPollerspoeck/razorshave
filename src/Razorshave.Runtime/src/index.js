@@ -16,6 +16,9 @@ export { NavLink } from './builtins/nav-link.js';
 export { Router, matchRoute } from './router.js';
 export { navigationManager } from './navigation-manager.js';
 export { Container, container } from './container.js';
+export { Store } from './store.js';
+export { LocalStorage, SessionStorage, CookieStore } from './browser-storage.js';
 export { ApiClient, ApiException } from './api-client.js';
+export { reportRuntimeError, setErrorHandler } from './errors.js';
 
 export const VERSION = '0.0.1';
