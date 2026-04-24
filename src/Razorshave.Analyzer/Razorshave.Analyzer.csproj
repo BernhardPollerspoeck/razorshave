@@ -6,7 +6,8 @@
 
     <IsPackable>true</IsPackable>
     <PackageId>Razorshave.Analyzer</PackageId>
-    <Description>Roslyn analyzer for Razorshave projects. Emits RZSxxxx diagnostics in the IDE and during build for code that violates Razorshave's allowlist.</Description>
+    <Description>Roslyn analyzer for Razorshave projects. Emits RZS2001 (unsupported expression), RZS2002 (unsupported statement) and RZS3001 (runtime-component shadow) diagnostics in the IDE and at build time so unsupported C# and name-collisions fail loudly instead of silently.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
 
     <IncludeBuildOutput>false</IncludeBuildOutput>
     <DevelopmentDependency>true</DevelopmentDependency>
@@ -30,6 +31,7 @@
           Pack="true"
           PackagePath="analyzers/dotnet/cs"
           Visible="false" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="/" Visible="false" />
   </ItemGroup>
 
 </Project>

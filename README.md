@@ -4,11 +4,109 @@
 
 Build-time compiler that turns Blazor components into static JavaScript — no WASM runtime, no SignalR, no server. Output is a static bundle deployable on any web server (nginx, S3, Cloudflare Pages).
 
-**Status:** Pre-M0. The bootstrap milestone — first end-to-end project transpile (`dotnet new blazor` → `dist/`) — is implemented end to end through step 5.13 of `planning/RAZORSHAVE-BOOTSTRAP.md`. M0 acceptance (5.14) is the next step.
+**Status:** `0.1.1` on NuGet — first public preview. 272+ tests green across C# + JS; KitchenSink demo transpiles end-to-end. API and emitters are shaping up but still expect change before `1.0`.
+
+## Getting started
+
+You need the **.NET 10 SDK** — nothing else. The `Razorshave.Cli` package ships the JS runtime and the esbuild binaries for Windows, Linux, macOS (x64 + arm64) inside the NuGet itself.
+
+### 1. New project
+
+```bash
+dotnet new blazor -o MyApp
+cd MyApp
+```
+
+### 2. Add the three Razorshave packages
+
+```bash
+dotnet add package Razorshave.Abstractions
+dotnet add package Razorshave.Analyzer
+dotnet add package Razorshave.Cli
+```
+
+Your `.csproj` should now look something like:
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Razorshave needs the Razor generator to persist .razor.g.cs on disk. -->
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Razorshave.Abstractions" Version="0.1.1" />
+    <PackageReference Include="Razorshave.Analyzer"     Version="0.1.1" />
+    <PackageReference Include="Razorshave.Cli"          Version="0.1.1" PrivateAssets="all" />
+  </ItemGroup>
+</Project>
+```
+
+### 3. Wire Razorshave services in `Program.cs`
+
+```csharp
+using Razorshave.Abstractions;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Registers IStore<T>, ILocalStorage, ISessionStorage, ICookieStore.
+// Server-side only — the transpiled SPA uses the JS runtime's equivalents.
+builder.Services.AddRazorshave();
+
+// Your own [Client] services — register here so the Blazor Server dev loop
+// (dotnet run) can resolve them. The transpiled SPA auto-registers them
+// on the JS side from the [Client] marker.
+builder.Services.AddHttpClient<IWeatherApi, WeatherApi>();
+
+// ... rest of the standard Blazor Server setup ...
+```
+
+### 4. Write a `[Client]`-marked API client
+
+```csharp
+using Razorshave.Abstractions;
+
+[Client]
+public sealed class WeatherApi(HttpClient http) : ApiClient(http), IWeatherApi
+{
+    public Task<WeatherForecast[]> GetForecastsAsync()
+        => Get<WeatherForecast[]>("https://…")!;
+}
+```
+
+### 5. Two build modes
+
+```bash
+# Normal dev loop: Blazor Server, full debugger, Hot Reload.
+dotnet run
+
+# Production: transpile to a static JavaScript SPA in dist/.
+dotnet build -c Razorshave
+```
+
+The `Razorshave` configuration is opt-in — `Debug` and `Release` stay vanilla Blazor. The transpiler only runs when you ask for it.
+
+### 6. Ship
+
+`dist/` contains `index.html`, a content-hashed `main.XXXX.js`, and your `wwwroot/` assets. Drop it on any static host — nginx, S3, Cloudflare Pages, GitHub Pages.
+
+### What the analyzer tells you
+
+If you write C# the transpiler cannot emit yet, the analyzer fires at edit-time:
+
+- **RZS2001** — unsupported expression (e.g. `switch` with list patterns)
+- **RZS2002** — unsupported statement (e.g. `try/catch`)
+- **RZS3001** — your component's name shadows a runtime component (`NavLink`, `Router`, `PageTitle`)
+
+No silent `/* TODO */ null` in the generated JS — if it compiles, it runs.
+
+---
 
 ## Quick start (developer loop)
 
-You need .NET 10 SDK and Node 22+.
+If you're hacking on Razorshave itself, the mono-repo has the full C# + JS test suite. You need .NET 10 SDK and Node 22+.
 
 ```bash
 # Clone & restore
@@ -47,7 +145,7 @@ The `Razorshave` build configuration is the opt-in. `Debug` and `Release` remain
 src/
 ├── Razorshave.Abstractions/   Attributes and base types user code references
 │                              ([Client], [ApiRoute], ApiClient, IStore<T>)
-├── Razorshave.Cli/            dotnet-tool + MSBuild task that orchestrates the pipeline
+├── Razorshave.Cli/            MSBuild task package that orchestrates the pipeline
 │   ├── Transpiler/            C# → JS emitters (class, field, method, expression,
 │   │                          statement, render-tree, etc.)
 │   ├── BuildCommand.cs        The build pipeline: build → transpile → bundle → dist/
@@ -90,7 +188,7 @@ dotnet test
 cd src/Razorshave.Runtime && npm test
 ```
 
-At the time of writing: 85 tests across both runners.
+At the time of writing: 295 tests across both runners (191 JS + 104 C#).
 
 ## License
 

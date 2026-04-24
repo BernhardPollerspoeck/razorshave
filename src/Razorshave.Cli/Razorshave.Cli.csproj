@@ -7,11 +7,68 @@
     <AssemblyName>razorshave</AssemblyName>
 
     <IsPackable>true</IsPackable>
-    <PackAsTool>true</PackAsTool>
-    <ToolCommandName>razorshave</ToolCommandName>
     <PackageId>Razorshave.Cli</PackageId>
-    <Description>Razorshave CLI — transpiles Blazor projects to static JavaScript SPAs. Install as a dotnet tool.</Description>
+    <Description>Razorshave build tool — transpiles Blazor components and `[Client]`-marked classes to a static JavaScript SPA. Install as a `&lt;PackageReference&gt;` and build with `-c Razorshave` to emit the SPA alongside the Debug/Release binaries.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <!-- MSBuild-Task layout: the CLI's assembly is not a lib the consumer
+         references, it's a Task the consumer's MSBuild invokes. Redirect the
+         pack output to `tasks/<tfm>/` so it matches the .targets file's
+         UsingTask path, and pull the Roslyn deps (CopyLocalLockFileAssemblies)
+         along — without them the MSBuild host can't resolve the types at
+         build time. Microsoft.Build.* are already marked PrivateAssets="all"
+         ExcludeAssets="runtime" on the PackageReference, so they're NOT
+         duplicated (MSBuild provides them at runtime). -->
+    <!-- MSBuild-task packaging: pack the task assembly + its transitive
+         runtime dependencies (Roslyn etc.) into tasks/<tfm>/ ourselves, so
+         they're reachable from the .targets UsingTask declaration. The
+         default lib/ pack path is off (IncludeBuildOutput=false below via
+         BuildOutputTargetFolder), dependencies on NuGet are suppressed so
+         consumers don't also pull Roslyn into their own build graph. -->
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <!-- NU5100: "assemblies outside of lib/ are not referenceable" —
+         intentional for a MSBuild-task package; the consumer doesn't
+         `using Razorshave.Cli;`, MSBuild loads the task at build time.
+         NU5128: missing lib/ folder, same reason.
+         NU5118: duplicate README.md, from /and package layout both referencing it. -->
+    <NoWarn>$(NoWarn);NU5100;NU5128</NoWarn>
   </PropertyGroup>
+
+  <!-- Runs as part of Pack; adds the task assembly + every copy-local
+       runtime dependency to the package's `tasks/<tfm>/` folder, and mirrors
+       the JS runtime src/ tree into `build/runtime/` preserving subfolders
+       (so `src/builtins/nav-link.js` → `build/runtime/builtins/nav-link.js`). -->
+  <Target Name="PackTaskAssemblies" BeforeTargets="_GetPackageFiles" DependsOnTargets="Build">
+    <ItemGroup>
+      <None Include="$(TargetPath)"
+            Pack="true"
+            PackagePath="tasks/$(TargetFramework)/"
+            Visible="false" />
+      <None Include="@(ReferenceCopyLocalPaths)"
+            Condition="'%(Extension)' == '.dll' AND '%(ReferenceCopyLocalPaths.DestinationSubDirectory)' == ''"
+            Pack="true"
+            PackagePath="tasks/$(TargetFramework)/"
+            Visible="false" />
+    </ItemGroup>
+
+    <!-- Walk the runtime's src/ folder. We compute the PackagePath via
+         GetRelativePath against RuntimeSrcRoot so subdirectories (`builtins/`)
+         survive without the double-prefix glitch a `<None Include="**\*">`
+         item with `%(RecursiveDir)` would produce. -->
+    <PropertyGroup>
+      <RuntimeSrcRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\Razorshave.Runtime\src'))</RuntimeSrcRoot>
+    </PropertyGroup>
+    <ItemGroup>
+      <_RuntimeFile Include="$(RuntimeSrcRoot)\**\*.js" Exclude="$(RuntimeSrcRoot)\**\*.test.js" />
+      <None Include="@(_RuntimeFile)"
+            Pack="true"
+            PackagePath="build/runtime/$([System.IO.Path]::GetRelativePath('$(RuntimeSrcRoot)', '%(_RuntimeFile.Identity)'))"
+            Visible="false" />
+    </ItemGroup>
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
@@ -26,6 +83,44 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Razorshave.Abstractions\Razorshave.Abstractions.csproj" />
+  </ItemGroup>
+
+  <!-- Package layout:
+       - tasks/net10.0/*                 (MSBuild task + Roslyn deps, packed by PackTaskAssemblies)
+       - build/Razorshave.Cli.targets    (auto-imported by NuGet for consumers)
+       - build/runtime/*.js              (JS runtime: VDOM, Component, Router, bcl, ...)
+       - build/esbuild/<rid>/esbuild*    (pinned esbuild binary for 4 RIDs)
+       - README.md                       (referenced by PackageReadmeFile) -->
+  <ItemGroup>
+    <None Include="build\Razorshave.Cli.targets"
+          Pack="true"
+          PackagePath="build/"
+          Visible="false" />
+    <None Include="..\..\README.md"
+          Pack="true"
+          PackagePath="/"
+          Visible="false" />
+
+
+    <!-- Pinned esbuild binaries (4 RIDs). Every binary ships — the consumer's
+         platform picks one at build time. Keeps ~40 MB but spares users a
+         Node.js install. -->
+    <None Include="..\..\tools\esbuild-bin\win-x64\esbuild.exe"
+          Pack="true"
+          PackagePath="build/esbuild/win-x64/"
+          Visible="false" />
+    <None Include="..\..\tools\esbuild-bin\linux-x64\esbuild"
+          Pack="true"
+          PackagePath="build/esbuild/linux-x64/"
+          Visible="false" />
+    <None Include="..\..\tools\esbuild-bin\osx-x64\esbuild"
+          Pack="true"
+          PackagePath="build/esbuild/osx-x64/"
+          Visible="false" />
+    <None Include="..\..\tools\esbuild-bin\osx-arm64\esbuild"
+          Pack="true"
+          PackagePath="build/esbuild/osx-arm64/"
+          Visible="false" />
   </ItemGroup>
 
 </Project>

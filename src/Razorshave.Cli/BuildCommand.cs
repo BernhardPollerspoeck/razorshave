@@ -436,12 +436,25 @@ internal static class BuildCommand
 
     private static string? FindRuntimeSource()
     {
-        // Two search roots cover dev, test and MSBuild-task contexts:
-        //   * the assembly's own directory (CLI bin, test bin, MSBuild-loaded copy)
-        //   * the current working directory (a repo-root `dotnet run` or `dotnet test`)
-        // From each we walk up and look for `[…]/src/Razorshave.Runtime/src`.
-        var roots = new List<string>();
+        // NuGet-package layout first: the assembly sits in tasks/net10.0/ and
+        // the runtime files land in build/runtime/ alongside it. A consumer
+        // installing via <PackageReference> hits this path.
         var asmPath = typeof(BuildCommand).Assembly.Location;
+        if (!string.IsNullOrEmpty(asmPath))
+        {
+            var asmDir = Path.GetDirectoryName(asmPath);
+            if (asmDir is not null)
+            {
+                // asmDir = <pkg>/tasks/net10.0/ → ../../build/runtime/
+                var packaged = Path.GetFullPath(Path.Combine(asmDir, "..", "..", "build", "runtime"));
+                if (Directory.Exists(packaged)) return packaged;
+            }
+        }
+
+        // Dev-repo fallback: walk up from the assembly location and the CWD
+        // looking for the mono-repo checkout. Covers `dotnet run`, tests, and
+        // MSBuild-loaded Debug copies during local development.
+        var roots = new List<string>();
         if (!string.IsNullOrEmpty(asmPath))
         {
             roots.Add(Path.GetDirectoryName(asmPath)!);
@@ -611,10 +624,27 @@ internal static class BuildCommand
 
     private static string? FindEsbuildBinary()
     {
+        // NuGet-package layout: build/esbuild/<rid>/esbuild[.exe].
+        var rid = CurrentEsbuildRid();
+        var asmPath = typeof(BuildCommand).Assembly.Location;
+        if (rid is not null && !string.IsNullOrEmpty(asmPath))
+        {
+            var asmDir = Path.GetDirectoryName(asmPath);
+            if (asmDir is not null)
+            {
+                var exeName = OperatingSystem.IsWindows() ? "esbuild.exe" : "esbuild";
+                var packaged = Path.GetFullPath(Path.Combine(asmDir, "..", "..", "build", "esbuild", rid, exeName));
+                if (File.Exists(packaged))
+                {
+                    EnsureExecutable(packaged);
+                    return packaged;
+                }
+            }
+        }
+
+        // Dev-repo fallback: runtime's local `node_modules/.bin/esbuild`.
         var runtimeSrc = FindRuntimeSource();
         if (runtimeSrc is null) return null;
-
-        // Runtime src is .../Razorshave.Runtime/src/ — .bin is next to src/.
         var runtimeRoot = Path.GetDirectoryName(runtimeSrc);
         if (runtimeRoot is null) return null;
 
@@ -629,6 +659,43 @@ internal static class BuildCommand
             if (File.Exists(candidate)) return candidate;
         }
         return null;
+    }
+
+    // Maps the current OS + process architecture onto one of the four RIDs
+    // we pack esbuild binaries for. Returns null if the combination isn't
+    // supported — caller falls back to the dev-repo search path, which will
+    // then fail with the existing "esbuild not found" diagnostic.
+    private static string? CurrentEsbuildRid()
+    {
+        var arch = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture;
+        if (OperatingSystem.IsWindows() && arch == System.Runtime.InteropServices.Architecture.X64)
+            return "win-x64";
+        if (OperatingSystem.IsLinux() && arch == System.Runtime.InteropServices.Architecture.X64)
+            return "linux-x64";
+        if (OperatingSystem.IsMacOS() && arch == System.Runtime.InteropServices.Architecture.X64)
+            return "osx-x64";
+        if (OperatingSystem.IsMacOS() && arch == System.Runtime.InteropServices.Architecture.Arm64)
+            return "osx-arm64";
+        return null;
+    }
+
+    // NuGet restores files read-only and without preserving POSIX exec bits.
+    // On Linux/macOS the esbuild binary needs +x before we can invoke it;
+    // Windows doesn't care. Best-effort — swallow if we can't chmod (e.g.
+    // read-only mount) and let the esbuild launch fail with its own error.
+    private static void EnsureExecutable(string path)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        try
+        {
+            var current = File.GetUnixFileMode(path);
+            var wanted = current
+                | UnixFileMode.UserExecute
+                | UnixFileMode.GroupExecute
+                | UnixFileMode.OtherExecute;
+            if (wanted != current) File.SetUnixFileMode(path, wanted);
+        }
+        catch { /* best-effort */ }
     }
 
     private static BundleResult RunEsbuild(string esbuildPath, string distDir, string runtimeDir)

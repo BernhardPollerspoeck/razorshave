@@ -1,9 +1,26 @@
 {
   "name": "@razorshave/runtime",
-  "version": "0.0.1",
+  "version": "0.1.1",
   "description": "Razorshave JavaScript runtime: component base class, VDOM, router, DI container, store, API client.",
   "license": "MIT",
-  "private": true,
+  "author": "Bernhard Pollerspöck",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BernhardPollerspoeck/razorshave.git",
+    "directory": "src/Razorshave.Runtime"
+  },
+  "bugs": "https://github.com/BernhardPollerspoeck/razorshave/issues",
+  "homepage": "https://github.com/BernhardPollerspoeck/razorshave#readme",
+  "keywords": ["razorshave", "blazor", "transpiler", "vdom", "spa"],
+  "files": [
+    "src/**/*.js",
+    "!src/**/*.test.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -13,7 +30,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "prepack": "node -e \"require('node:fs').copyFileSync('../../README.md', 'README.md'); require('node:fs').copyFileSync('../../LICENSE', 'LICENSE')\"",
+    "postpack": "node -e \"require('node:fs').unlinkSync('README.md'); require('node:fs').unlinkSync('LICENSE')\""
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

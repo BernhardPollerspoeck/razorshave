@@ -10,10 +10,24 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
 
     <Authors>Bernhard Pollerspöck</Authors>
-    <Company>QSP GmbH</Company>
     <Product>Razorshave</Product>
-    <Copyright>Copyright © 2026 QSP GmbH</Copyright>
+    <Copyright>Copyright © 2026 Bernhard Pollerspöck</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/BernhardPollerspoeck/razorshave</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/BernhardPollerspoeck/razorshave</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>blazor;transpiler;spa;wasm-alternative;razor;razorshave</PackageTags>
+    <!-- Single point of truth for package version across all 3 NuGet packages.
+         Bumped 0.1.0 → 0.1.1 after discovering that 0.1.0's Razorshave.Cli
+         relied on repo-local runtime + esbuild paths that weren't shipped in
+         the package, making the build fail for any external consumer. 0.1.0
+         has been unlisted on nuget.org. -->
+    <Version>0.1.1</Version>
+    <!-- Deterministic builds + source-link help consumers debug into the
+         packages instead of stepping through decompiled bodies. -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
 
     <!-- Warnings we explicitly accept -->
     <!-- CS1591: Missing XML doc — only required on Abstractions (set per-project) -->

@@ -17,15 +17,20 @@
   </PropertyGroup>
 
   <!-- UsingTask picks up the compiled Razorshave.Cli assembly. The path is
-       resolved relative to this .targets file so the import works from both
-       the NuGet package layout (lib/net10.0/) and the local dev layout
-       (bin/$(Configuration)/net10.0/). -->
+       resolved relative to this .targets file so the import works from all
+       three consumption modes:
+         * NuGet package      → tasks/net10.0/razorshave.dll (packed explicitly)
+         * Local dev Debug    → ../bin/Debug/net10.0/razorshave.dll
+         * Local dev Release  → ../bin/Release/net10.0/razorshave.dll -->
+  <UsingTask TaskName="Razorshave.Cli.RazorshaveTranspileTask"
+             AssemblyFile="$(MSBuildThisFileDirectory)..\tasks\net10.0\razorshave.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\tasks\net10.0\razorshave.dll')" />
   <UsingTask TaskName="Razorshave.Cli.RazorshaveTranspileTask"
              AssemblyFile="$(MSBuildThisFileDirectory)..\bin\Debug\net10.0\razorshave.dll"
              Condition="Exists('$(MSBuildThisFileDirectory)..\bin\Debug\net10.0\razorshave.dll')" />
   <UsingTask TaskName="Razorshave.Cli.RazorshaveTranspileTask"
-             AssemblyFile="$(MSBuildThisFileDirectory)..\lib\net10.0\razorshave.dll"
-             Condition="Exists('$(MSBuildThisFileDirectory)..\lib\net10.0\razorshave.dll')" />
+             AssemblyFile="$(MSBuildThisFileDirectory)..\bin\Release\net10.0\razorshave.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\bin\Release\net10.0\razorshave.dll')" />
 
   <Target Name="RazorshaveTranspile"
           AfterTargets="Build"

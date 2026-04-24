@@ -42,3 +42,12 @@ Thumbs.db
 
 # Received snapshots (must review before accepting)
 *.received.*
+
+# Claude Code session state (hook locks, per-user local settings)
+.claude/
+
+# npm pack copies the root README/LICENSE into the Runtime package dir via
+# its prepack script, then removes them in postpack. If a pack is interrupted
+# the files linger — keep them out of git either way.
+src/Razorshave.Runtime/README.md
+src/Razorshave.Runtime/LICENSE
