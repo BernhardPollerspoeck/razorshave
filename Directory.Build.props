@@ -18,11 +18,13 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>blazor;transpiler;spa;wasm-alternative;razor;razorshave</PackageTags>
     <!-- Single point of truth for package version across all 3 NuGet packages.
-         Bumped 0.1.0 → 0.1.1 after discovering that 0.1.0's Razorshave.Cli
-         relied on repo-local runtime + esbuild paths that weren't shipped in
-         the package, making the build fail for any external consumer. 0.1.0
-         has been unlisted on nuget.org. -->
-    <Version>0.1.1</Version>
+         0.1.0 → 0.1.1: embed JS runtime + esbuild binaries in Razorshave.Cli.
+         0.1.1 → 0.1.2: wwwroot-CSS auto-discovery in dist/index.html (not only
+                        app.css), skip App.razor and Error.razor in the transpiler
+                        (they're Blazor-server hosts with no SPA equivalent), and
+                        silence AddAttribute-shape warnings for known-safe fallbacks
+                        (literals, identifiers, member/element access). -->
+    <Version>0.1.2</Version>
     <!-- Deterministic builds + source-link help consumers debug into the
          packages instead of stepping through decompiled bodies. -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>

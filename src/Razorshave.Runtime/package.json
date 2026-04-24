@@ -1,6 +1,6 @@
 {
   "name": "@razorshave/runtime",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Razorshave JavaScript runtime: component base class, VDOM, router, DI container, store, API client.",
   "license": "MIT",
   "author": "Bernhard Pollerspöck",

@@ -322,16 +322,33 @@ internal static class RenderTreeEmitter
             }
         }
 
-        // Fallback — emit the raw expression. Log so a future Razor-SG shape
-        // change that lands here is visible instead of silently producing
-        // plausible-looking-but-wrong JS. Uses `Console.Error` so it flows
-        // through MSBuild's warning stream during `-c Razorshave`.
-        Console.Error.WriteLine(
-            $"razorshave: AddAttribute value did not match any known Razor emission shape, "
-            + $"emitting raw expression: {valueExpr.Kind()} → `{valueExpr}`. "
-            + "If this is wrong JS, Razor's code-gen may have changed — file an issue.");
+        // Fallback — emit the raw expression. Some raw-expression shapes are
+        // known-safe (literals, identifiers, member/element access) and
+        // previously flooded the console with warnings on every `<link
+        // href="@Assets[...]">`, `<img alt="literal">`, or `<a href="@Url">`
+        // in the user's App.razor. Only warn on shapes we genuinely haven't
+        // seen — that's where a Razor-SG change would hide.
+        if (!IsKnownSafeFallback(valueExpr))
+        {
+            Console.Error.WriteLine(
+                $"razorshave: AddAttribute value did not match any known Razor emission shape, "
+                + $"emitting raw expression: {valueExpr.Kind()} → `{valueExpr}`. "
+                + "If this is wrong JS, Razor's code-gen may have changed — file an issue.");
+        }
         return EmitExpression(valueExpr, ctx);
     }
+
+    // Expression shapes that land in the fallback path but map 1:1 to valid
+    // JS through the generic ExpressionEmitter: literals, identifiers,
+    // dotted member access, indexer access. Silencing the warning for these
+    // keeps the console clean while leaving the diagnostic on for genuinely
+    // new Razor emission shapes (invocations, lambdas, switch expressions,
+    // ...) that would more likely be wrong.
+    private static bool IsKnownSafeFallback(ExpressionSyntax expr)
+        => expr is LiteralExpressionSyntax
+           or IdentifierNameSyntax
+           or MemberAccessExpressionSyntax
+           or ElementAccessExpressionSyntax;
 
     // `@bind` on an input generates `BindConverter.FormatValue(expr)` — this
     // is purely a .NET-side formatter call; in JS we just read `expr`, since

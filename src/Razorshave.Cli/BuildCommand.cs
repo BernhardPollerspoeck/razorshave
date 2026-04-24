@@ -314,6 +314,14 @@ internal static class BuildCommand
                     continue;
                 }
 
+                // App.razor is the Blazor-Server host document (<!DOCTYPE html>,
+                // <head>/<body>, @Assets[...] link/script tags, <HeadOutlet />).
+                // Razorshave replaces its role entirely by generating dist/index.html
+                // — transpiling it to JS would emit nonsense and flood the console
+                // with AddAttribute-shape warnings. Error.razor is the server-only
+                // error page (HttpContext / Activity), same story.
+                if (className is "App" or "Error") continue;
+
                 var js = Transpile(tree, componentCls, references, globalUsings);
                 if (string.IsNullOrWhiteSpace(js)) continue;
 
@@ -591,12 +599,15 @@ internal static class BuildCommand
         File.WriteAllText(Path.Combine(distDir, "main.js"), sb.ToString());
     }
 
-    private static void WriteIndexHtml(string distDir, string bundleFileName, IReadOnlyList<string> cssLinks)
+    private static void WriteIndexHtml(string distDir, string bundleFileName, IReadOnlyList<string> cssLinks, string bodyAttributes)
     {
         // Bundled output — esbuild inlines the runtime. index.html pulls the
         // content-hashed bundle plus whatever CSS the project needs: Bootstrap
         // (if present in wwwroot/lib), the project's app.css, and the Razor
-        // scoped-CSS bundle the SDK generates under obj/.
+        // scoped-CSS bundle the SDK generates under obj/. Body attributes
+        // are forwarded from App.razor so CSS that hooks on body (data-*
+        // attrs, theme classes, lang) behaves the same in the SPA as in
+        // Blazor Server.
         var sb = new StringBuilder();
         sb.Append("<!DOCTYPE html>\n");
         sb.Append("<html lang=\"en\">\n");
@@ -610,7 +621,7 @@ internal static class BuildCommand
         }
         sb.Append("  <link rel=\"icon\" type=\"image/png\" href=\"favicon.png\">\n");
         sb.Append("</head>\n");
-        sb.Append("<body>\n");
+        sb.Append("<body").Append(bodyAttributes).Append(">\n");
         sb.Append("  <div id=\"app\"></div>\n");
         sb.Append("  <script type=\"module\" src=\"./").Append(bundleFileName).Append("\"></script>\n");
         sb.Append("</body>\n");
@@ -799,8 +810,35 @@ internal static class BuildCommand
         // as <AssemblyName>.styles.css. Copy it alongside the other assets.
         var scopedCssLink = CopyScopedCssBundle(distDir, projectDir, configuration, tfm);
 
-        WriteIndexHtml(distDir, bundleFileName, BuildCssLinks(distDir, scopedCssLink));
+        var bodyAttributes = ReadAppRazorBodyAttributes(projectDir);
+        WriteIndexHtml(distDir, bundleFileName, BuildCssLinks(distDir, scopedCssLink), bodyAttributes);
         WriteDeployConfigs(distDir);
+    }
+
+    // Pulls the `<body …>` attribute list out of the project's App.razor so
+    // consumers who style-hook on body attributes (e.g. `body[data-badge="x"]`
+    // in CSS, body-class theming, lang on body) get the same behaviour in
+    // the transpiled SPA as in Blazor Server. App.razor itself isn't
+    // transpiled (it's the Blazor-server host document), but its body-level
+    // attributes are structural and worth forwarding. Returns an empty
+    // string when App.razor is missing or has no attributes.
+    private static string ReadAppRazorBodyAttributes(string projectDir)
+    {
+        var app = Directory.EnumerateFiles(projectDir, "App.razor", SearchOption.AllDirectories)
+            .FirstOrDefault();
+        if (app is null) return string.Empty;
+
+        string html;
+        try { html = File.ReadAllText(app); }
+        catch { return string.Empty; }
+
+        var m = System.Text.RegularExpressions.Regex.Match(
+            html,
+            @"<body\b([^>]*)>",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!m.Success) return string.Empty;
+        var attrs = m.Groups[1].Value.Trim();
+        return string.IsNullOrEmpty(attrs) ? string.Empty : " " + attrs;
     }
 
     /// <summary>
@@ -865,13 +903,31 @@ internal static class BuildCommand
 
     private static List<string> BuildCssLinks(string distDir, string? scopedCssLink)
     {
-        // Order matches Blazor's App.razor convention: framework CSS first,
-        // app CSS second, scoped CSS last so user component styles win.
+        // Order matches Blazor's App.razor convention: framework CSS first
+        // (bootstrap, if present), then app.css as the primary stylesheet,
+        // then every OTHER top-level wwwroot CSS in alphabetical order
+        // (landing.css, theme.css, whatever the user drops in), then the
+        // Razor-scoped-CSS bundle last so user component styles win.
+        //
+        // Generic CSS discovery replaces the earlier hardcoded `app.css`-only
+        // list — a project with multiple stylesheets in wwwroot (e.g. one
+        // global + one landing-specific) used to silently lose all but
+        // app.css, which broke pages that relied on the other files.
         var links = new List<string>();
         if (File.Exists(Path.Combine(distDir, "lib", "bootstrap", "dist", "css", "bootstrap.min.css")))
             links.Add("lib/bootstrap/dist/css/bootstrap.min.css");
-        if (File.Exists(Path.Combine(distDir, "app.css")))
-            links.Add("app.css");
+
+        var scopedCssFile = scopedCssLink is null ? null : Path.GetFileName(scopedCssLink);
+        var topCss = Directory.EnumerateFiles(distDir, "*.css", SearchOption.TopDirectoryOnly)
+            .Select(Path.GetFileName)
+            .Where(n => n is not null)
+            .Cast<string>()
+            .Where(n => !string.Equals(n, scopedCssFile, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(n => string.Equals(n, "app.css", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        foreach (var name in topCss) links.Add(name);
+
         if (scopedCssLink is not null)
             links.Add(scopedCssLink);
         return links;
