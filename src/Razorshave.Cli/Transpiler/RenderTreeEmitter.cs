@@ -117,8 +117,8 @@ internal static class RenderTreeEmitter
                 return;
 
             default:
-                destStack.Peek().Add(new LiteralOp($"/* TODO: unsupported render stmt: {stmt.Kind()} */"));
-                return;
+                throw TranspilerException.Unsupported(stmt,
+                    $"the BuildRenderTree statement kind '{stmt.Kind()}' (likely a Razor source-generator shape Razorshave hasn't been taught yet)");
         }
     }
 
@@ -204,8 +204,8 @@ internal static class RenderTreeEmitter
             case "CloseComponent":
                 if (frameStack.Count == 0)
                 {
-                    destStack.Peek().Add(new LiteralOp("/* TODO: unbalanced Close */"));
-                    return;
+                    throw TranspilerException.Unsupported(inv,
+                        $"a __builder.{name} call without a matching Open (Razorshave codegen invariant violated)");
                 }
                 var frame = frameStack.Pop();
                 destStack.Pop();
@@ -215,29 +215,32 @@ internal static class RenderTreeEmitter
             case "AddAttribute":
             case "AddComponentParameter":
             {
-                // Defensive: Razor-SG currently always emits these inside an
-                // Open-scope, but a degenerate input (or a future SG change)
-                // that puts them at top-level would otherwise throw
-                // InvalidOperationException on the Peek below.
+                // Razor-SG always emits these inside an Open-scope today; a
+                // degenerate input (or a future SG change) that puts them at
+                // top-level would mean Razorshave needs to learn the new shape.
                 if (frameStack.Count == 0)
                 {
-                    destStack.Peek().Add(new LiteralOp(
-                        $"/* TODO: {builderName}.{name} outside any Open-scope */"));
-                    return;
+                    throw TranspilerException.Unsupported(inv,
+                        $"a __builder.{name} call outside any Open-scope (Razor source-generator emitted an unexpected shape)");
                 }
 
-                // Razor almost always emits the attribute name as a string
-                // literal. A few framework shapes (Router's AppAssembly,
-                // `@typeof(...)`-style bindings) pass a computed expression.
-                // Fall back to a TODO marker rather than crashing.
-                if (args.Arguments[1].Expression is not LiteralExpressionSyntax lit)
+                // Razor emits the attribute name as either a string literal
+                // (`"href"`) or a `nameof(Type.Property)` invocation — the
+                // latter is a compile-time string the SG uses so framework
+                // renames stay in sync. Anything else means the SG produced
+                // a shape Razorshave hasn't been taught yet.
+                var nameExpr = args.Arguments[1].Expression;
+                string? propName = nameExpr switch
                 {
-                    frameStack.Peek().Props.Add((
-                        $"_dynamic{frameStack.Peek().Props.Count}",
-                        $"/* TODO: dynamic attribute name: {args.Arguments[1].Expression.Kind()} */ null"));
-                    return;
+                    LiteralExpressionSyntax lit => lit.Token.ValueText,
+                    InvocationExpressionSyntax nameofInv when TryExtractNameof(nameofInv, out var t) => t,
+                    _ => null,
+                };
+                if (propName is null)
+                {
+                    throw TranspilerException.Unsupported(nameExpr,
+                        $"a dynamic attribute name (kind '{nameExpr.Kind()}') passed to __builder.{name}");
                 }
-                var propName = lit.Token.ValueText;
                 frameStack.Peek().Props.Add((propName, ResolveAttributeValue(inv, ctx)));
                 return;
             }
@@ -273,9 +276,30 @@ internal static class RenderTreeEmitter
                 return;
 
             default:
-                destStack.Peek().Add(new LiteralOp($"/* TODO: {builderName}.{name} */"));
-                return;
+                throw TranspilerException.Unsupported(inv,
+                    $"the __builder method '{builderName}.{name}' (Razor source generator emitted a call Razorshave does not yet handle)");
         }
+    }
+
+    // `nameof(Type.Member)` evaluates to the simple member name at compile
+    // time — Razor SG uses this for typed-component parameter names so a
+    // framework rename stays in sync. Reach the inner identifier or the
+    // right-hand side of a member-access chain regardless of how many
+    // qualifiers (`global::`, namespaces) precede it.
+    private static bool TryExtractNameof(InvocationExpressionSyntax inv, out string text)
+    {
+        text = "";
+        if (inv.Expression is not IdentifierNameSyntax id || id.Identifier.Text != "nameof") return false;
+        if (inv.ArgumentList.Arguments.Count != 1) return false;
+
+        var arg = inv.ArgumentList.Arguments[0].Expression;
+        text = arg switch
+        {
+            IdentifierNameSyntax i => i.Identifier.Text,
+            MemberAccessExpressionSyntax m => m.Name.Identifier.Text,
+            _ => "",
+        };
+        return text.Length > 0;
     }
 
     // Ordered priority of attribute-value emitters. Each entry tries to

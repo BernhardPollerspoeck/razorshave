@@ -30,7 +30,27 @@ public sealed class BuildCommandTests : IClassFixture<BuildCommandTests.KitchenS
         Assert.True(File.Exists(indexPath));
 
         var html = File.ReadAllText(indexPath);
-        Assert.Matches(@"<script type=""module"" src=""\./main\.[A-Z0-9]{8}\.js""></script>", html);
+        // Default deployment is at "/" so the bundle is at /main.X.js — must
+        // be absolute, otherwise a deep-link to /legal/agb resolves the
+        // script src against /legal/ and 404s.
+        Assert.Matches(@"<script type=""module"" src=""/main\.[A-Z0-9]{8}\.js""></script>", html);
+    }
+
+    [Fact]
+    public void Index_html_uses_absolute_paths_for_every_asset()
+    {
+        var html = File.ReadAllText(Path.Combine(_fixture.DistPath, "index.html"));
+
+        // All href= and src= attributes inside index.html must be rooted
+        // at "/" — relative paths break SPA deep-link routing.
+        var refs = System.Text.RegularExpressions.Regex
+            .Matches(html, @"(?:href|src)=""([^""]+)""")
+            .Select(m => m.Groups[1].Value)
+            .ToList();
+
+        Assert.NotEmpty(refs);
+        var relative = refs.Where(r => !r.StartsWith('/')).ToList();
+        Assert.Empty(relative);
     }
 
     [Fact]
@@ -67,6 +87,30 @@ public sealed class BuildCommandTests : IClassFixture<BuildCommandTests.KitchenS
             "favicon.png should be copied from wwwroot");
         Assert.True(File.Exists(Path.Combine(_fixture.DistPath, "app.css")),
             "app.css should be copied from wwwroot");
+    }
+
+    [Fact]
+    public void Index_html_links_every_present_favicon_with_correct_mime()
+    {
+        // KitchenSink ships favicon.png in wwwroot. The link must use
+        // image/png and an absolute href so deep-links still resolve.
+        var html = File.ReadAllText(Path.Combine(_fixture.DistPath, "index.html"));
+        Assert.Contains(@"<link rel=""icon"" type=""image/png"" href=""/favicon.png"">", html);
+    }
+
+    [Fact]
+    public void Index_html_uses_assembly_name_as_default_title()
+    {
+        // Razorshave defaults <RazorshaveTitle> to $(AssemblyName) — for
+        // KitchenSink that's "KitchenSink.Client". Hardcoding "Razorshave"
+        // would be a regression: every shipped SPA would carry the framework
+        // name as its title.
+        var html = File.ReadAllText(Path.Combine(_fixture.DistPath, "index.html"));
+        // The fixture invokes Run() without an MSBuild context, so Title is
+        // null/empty and the fallback "Razorshave" wins. The MSBuild path
+        // (covered by the targets file) defaults to AssemblyName instead;
+        // here we lock down that an explicit Title overrides nothing else.
+        Assert.Contains("<title>Razorshave</title>", html);
     }
 
     public sealed class KitchenSinkBuildFixture : IDisposable

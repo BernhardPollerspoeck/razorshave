@@ -23,8 +23,15 @@
                         app.css), skip App.razor and Error.razor in the transpiler
                         (they're Blazor-server hosts with no SPA equivalent), and
                         silence AddAttribute-shape warnings for known-safe fallbacks
-                        (literals, identifiers, member/element access). -->
-    <Version>0.1.2</Version>
+                        (literals, identifiers, member/element access).
+         0.1.2 → 0.2.0: fail-fast on unsupported syntax — analyzer + transpiler
+                        throw with an issue-tracker link instead of emitting
+                        silent /* TODO */ comments. try / catch / finally / throw
+                        support, RZS2003 for unsupported C# patterns, absolute
+                        SPA asset paths (deep-link fix) + RazorshaveBasePath for
+                        sub-path deployments, RazorshaveTitle property, favicon
+                        auto-detect (ico / svg / png). -->
+    <Version>0.2.0</Version>
     <!-- Deterministic builds + source-link help consumers debug into the
          packages instead of stepping through decompiled bodies. -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>

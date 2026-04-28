@@ -10,11 +10,13 @@ using Razorshave.Analyzer.Diagnostics;
 namespace Razorshave.Analyzer;
 
 /// <summary>
-/// Fires <c>RZS2001</c> / <c>RZS2002</c> on C# expressions or statements
-/// that the Razorshave transpiler cannot emit. Running this analyzer is
-/// the difference between "silent <c>/* TODO */ null</c> in production JS
-/// at runtime" and "red squiggle in the IDE at edit-time" — the whole
-/// point is to make the unsupported path visible.
+/// Fires <c>RZS2001</c> / <c>RZS2002</c> / <c>RZS2003</c> on C# expressions,
+/// statements, or patterns that the Razorshave transpiler cannot emit.
+/// Running this analyzer is the difference between "the build fails inside
+/// the transpiler with a stack trace" and "red squiggle in the IDE at
+/// edit-time" — the whole point is to surface the gap as early and as
+/// nicely as possible. The transpiler still throws as a safety net for
+/// shapes the analyzer hasn't been taught yet.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -37,7 +39,7 @@ public sealed class UnsupportedLanguageFeatureAnalyzer : DiagnosticAnalyzer
     private static readonly DiagnosticDescriptor ExpressionRule = new(
         id: DiagnosticIds.UnsupportedExpression,
         title: "Unsupported C# expression in Razorshave code",
-        messageFormat: "Razorshave cannot transpile '{0}' expressions yet — the transpiler will emit `null` at this location and the resulting JavaScript will not behave as intended",
+        messageFormat: "Razorshave cannot transpile '{0}' expressions yet." + IssueTracker.Tail,
         category: "Razorshave.Transpiler",
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
@@ -46,14 +48,23 @@ public sealed class UnsupportedLanguageFeatureAnalyzer : DiagnosticAnalyzer
     private static readonly DiagnosticDescriptor StatementRule = new(
         id: DiagnosticIds.UnsupportedStatement,
         title: "Unsupported C# statement in Razorshave code",
-        messageFormat: "Razorshave cannot transpile '{0}' statements yet — the transpiler will emit a TODO comment at this location and downstream behaviour will break",
+        messageFormat: "Razorshave cannot transpile '{0}' statements yet." + IssueTracker.Tail,
         category: "Razorshave.Transpiler",
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
-        description: "The transpiler's StatementEmitter has no case for this syntax kind. Until one lands, restructure the method with supported statements (if/else, for, foreach, local-declaration, expression, return).");
+        description: "The transpiler's StatementEmitter has no case for this syntax kind. Until one lands, restructure the method with supported statements (if/else, for, foreach, local-declaration, expression, return, try/catch/finally, throw).");
+
+    private static readonly DiagnosticDescriptor PatternRule = new(
+        id: DiagnosticIds.UnsupportedPattern,
+        title: "Unsupported C# pattern in Razorshave code",
+        messageFormat: "Razorshave cannot transpile '{0}' patterns yet." + IssueTracker.Tail,
+        category: "Razorshave.Transpiler",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "The transpiler's pattern emitters handle ConstantPattern, RelationalPattern, DiscardPattern, VarPattern, and the 'not null' shape of NotPattern. Other pattern kinds (TypePattern, DeclarationPattern, RecursivePattern, ListPattern, BinaryPattern, ParenthesizedPattern) are not yet supported.");
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-        ImmutableArray.Create(ExpressionRule, StatementRule);
+        ImmutableArray.Create(ExpressionRule, StatementRule, PatternRule);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -125,6 +136,22 @@ public sealed class UnsupportedLanguageFeatureAnalyzer : DiagnosticAnalyzer
                     if (IsRazorGeneratorInternal(location)) continue;
                     context.ReportDiagnostic(Diagnostic.Create(
                         StatementRule, location, kind.ToString()));
+                }
+            }
+            else if (descendant is PatternSyntax pat)
+            {
+                // Pattern walking lives in its own branch because PatternSyntax
+                // is neither ExpressionSyntax nor StatementSyntax — without
+                // this, sub-patterns of `is`-expressions and switch-expression
+                // arms slip past the allowlist and only the transpiler's
+                // safety-net throw catches them at build time.
+                var kind = pat.Kind();
+                if (!SupportedSyntax.Patterns.Contains(kind))
+                {
+                    var location = pat.GetLocation();
+                    if (IsRazorGeneratorInternal(location)) continue;
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        PatternRule, location, kind.ToString()));
                 }
             }
         }

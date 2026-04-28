@@ -14,6 +14,18 @@
     <!-- Ensure the Razor source generator persists .razor.g.cs on disk so
          the transpiler can read them. Users can override if needed. -->
     <EmitCompilerGeneratedFiles Condition="'$(EmitCompilerGeneratedFiles)' == ''">true</EmitCompilerGeneratedFiles>
+
+    <!-- URL prefix every emitted asset (CSS, favicon, the JS bundle) is
+         rooted at. Default "/" emits /main.X.js, /app.css, etc. — works
+         for SPAs deployed at the domain root. Override to "/myapp/" when
+         deploying under a sub-path so deep-link requests still find
+         the bundle. -->
+    <RazorshaveBasePath Condition="'$(RazorshaveBasePath)' == ''">/</RazorshaveBasePath>
+
+    <!-- Static <title> for index.html. Defaults to the assembly name so
+         each project gets a sensible window title without explicit setup;
+         per-page <PageTitle> components override this at runtime. -->
+    <RazorshaveTitle Condition="'$(RazorshaveTitle)' == ''">$(AssemblyName)</RazorshaveTitle>
   </PropertyGroup>
 
   <!-- UsingTask picks up the compiled Razorshave.Cli assembly. The path is
@@ -35,8 +47,11 @@
   <Target Name="RazorshaveTranspile"
           AfterTargets="Build"
           Condition="'$(Configuration)' == 'Razorshave'">
-    <Message Importance="high" Text="Razorshave: triggering transpile for $(MSBuildProjectName)" />
-    <RazorshaveTranspileTask ProjectDirectory="$(MSBuildProjectDirectory)" Configuration="$(Configuration)" />
+    <Message Importance="high" Text="Razorshave: triggering transpile for $(MSBuildProjectName) (base: $(RazorshaveBasePath), title: $(RazorshaveTitle))" />
+    <RazorshaveTranspileTask ProjectDirectory="$(MSBuildProjectDirectory)"
+                             Configuration="$(Configuration)"
+                             BasePath="$(RazorshaveBasePath)"
+                             Title="$(RazorshaveTitle)" />
   </Target>
 
 </Project>

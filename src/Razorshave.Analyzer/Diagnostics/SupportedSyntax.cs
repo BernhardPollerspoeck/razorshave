@@ -105,21 +105,19 @@ internal static class SupportedSyntax
             // lambdas
             SyntaxKind.SimpleLambdaExpression,
             SyntaxKind.ParenthesizedLambdaExpression,
-            // switch-expression (arms emit through same machinery)
+            // switch-expression (arms emit through same machinery). Pattern
+            // kinds inside the arms are walked separately via Patterns and
+            // RZS2003 — they're not ExpressionSyntax so the expression-walk
+            // never reaches them.
             SyntaxKind.SwitchExpression,
-            SyntaxKind.SwitchExpressionArm,
-            SyntaxKind.ConstantPattern,
-            SyntaxKind.RelationalPattern,
-            SyntaxKind.DiscardPattern,
-            SyntaxKind.VarPattern,
-            SyntaxKind.WhenClause,
             // is-pattern: ExpressionEmitter.EmitIsPattern handles the null
-            // forms (`x is null`, `x is not null`); other pattern shapes still
-            // fall through to TODO-null inside that emitter, but the kinds
-            // themselves are allowed at walk time so the analyzer doesn't
-            // double-flag them before EmitIsPattern gets to diagnose.
+            // forms (`x is null`, `x is not null`). The inner pattern is
+            // walked via Patterns; this just lets the outer expression
+            // through so the walker descends into it.
             SyntaxKind.IsPatternExpression,
-            SyntaxKind.NotPattern,
+            // throw-as-expression: `x ?? throw new Foo()`. Statement-form
+            // `throw e;` lives in the Statements set instead.
+            SyntaxKind.ThrowExpression,
             // misc
             SyntaxKind.InterpolatedStringText,
             SyntaxKind.Interpolation,
@@ -144,5 +142,30 @@ internal static class SupportedSyntax
             SyntaxKind.VariableDeclaration,
             SyntaxKind.VariableDeclarator,
             SyntaxKind.EqualsValueClause,
+            // exception handling — multiple C# catches collapse into a single
+            // JS `catch (__e) { ... if-chain ... }` plus optional finally.
+            SyntaxKind.TryStatement,
+            SyntaxKind.ThrowStatement,
+        });
+
+    /// <summary>
+    /// Pattern kinds the transpiler can match against. Driven by what
+    /// <c>ExpressionEmitter.SwitchPatternCondition</c> and
+    /// <c>ExpressionEmitter.EmitIsPattern</c> handle today.
+    /// </summary>
+    /// <remarks>
+    /// <c>NotPattern</c> is allowed only as a wrapper — its inner pattern is
+    /// walked separately, and the only shape the emitter actually translates
+    /// is <c>not null</c> (an inner ConstantPattern of NullLiteral). Anything
+    /// else hits the throw inside EmitIsPattern.
+    /// </remarks>
+    public static readonly ImmutableHashSet<SyntaxKind> Patterns =
+        ImmutableHashSet.CreateRange(new[]
+        {
+            SyntaxKind.ConstantPattern,
+            SyntaxKind.RelationalPattern,
+            SyntaxKind.DiscardPattern,
+            SyntaxKind.VarPattern,
+            SyntaxKind.NotPattern,
         });
 }

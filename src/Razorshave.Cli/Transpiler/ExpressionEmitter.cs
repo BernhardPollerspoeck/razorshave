@@ -10,12 +10,14 @@ namespace Razorshave.Cli.Transpiler;
 /// Emits a single C# expression as its JavaScript equivalent.
 /// </summary>
 /// <remarks>
-/// Scope for 5.5:
-/// literals, identifiers (with <c>this.</c>-rewrite on class members), <c>this</c>,
-/// prefix/postfix unary, binary, assignment (including compound forms),
-/// member-access, invocation, and <c>await</c>. Everything else lands in the
-/// default branch as <c>/* TODO: &lt;Kind&gt; */ null</c> so snapshot tests stay
-/// readable and reveal what still needs to be handled.
+/// Supported kinds match <c>SupportedSyntax.Expressions</c> in the analyzer
+/// allowlist (literals, identifiers with <c>this.</c>-rewrite, unary/binary,
+/// assignment family, member access, invocation, <c>await</c>, switch
+/// expressions, and the documented <c>is null</c> / <c>is not null</c>
+/// patterns). Anything outside throws a <see cref="TranspilerException"/>
+/// so the build fails loudly rather than emitting silent placeholder
+/// JavaScript. The analyzer (RZS2001) is the primary gate; the throws are
+/// the safety net for cases where the analyzer has a gap.
 /// </remarks>
 internal static class ExpressionEmitter
 {
@@ -441,9 +443,21 @@ internal static class ExpressionEmitter
                 sb.Append(" }");
                 break;
 
-            default:
-                sb.Append("/* TODO: ").Append(expr.Kind()).Append(" */ null");
+            case ThrowExpressionSyntax throwExpr:
+                // C# allows `x ?? throw new Foo()` as an expression; JS only
+                // has `throw` as a statement. Wrap in an arrow IIFE so the
+                // throw runs when the surrounding expression evaluates the
+                // operand. Slightly heavier than a bare `throw`, but the
+                // alternative would require restructuring the enclosing
+                // expression — far more invasive for a rare pattern.
+                sb.Append("(() => { throw ");
+                Emit(throwExpr.Expression, sb, ctx);
+                sb.Append("; })()");
                 break;
+
+            default:
+                throw TranspilerException.Unsupported(expr,
+                    $"the C# expression '{expr.Kind()}' (the analyzer should have caught this before transpile)");
         }
     }
 
@@ -558,7 +572,8 @@ internal static class ExpressionEmitter
             VarPatternSyntax => null,
             ConstantPatternSyntax cp => BuildConstantMatch(subjectJs, cp.Expression, ctx),
             RelationalPatternSyntax rp => BuildRelationalMatch(subjectJs, rp, ctx),
-            _ => "false /* TODO: unsupported switch pattern */",
+            _ => throw TranspilerException.Unsupported(pattern,
+                $"the switch-expression pattern '{pattern.Kind()}'"),
         };
 
         if (when is null) return core;
@@ -622,8 +637,9 @@ internal static class ExpressionEmitter
     // Emits an `is`-pattern expression. Only `is null` and `is not null` are
     // supported — they map to JS `== null` / `!= null` (loose, matches C#
     // "kein Wert" semantics). Other patterns (type, declaration, property)
-    // fall through as TODO-null until we add proper emitters; the analyzer
-    // (RZS2001) keeps them from slipping into production silently.
+    // throw a TranspilerException so the build fails until we add a proper
+    // emitter; the pattern-walk analyzer (RZS2003) catches them earlier in
+    // the IDE.
     private static void EmitIsPattern(IsPatternExpressionSyntax isPat, StringBuilder sb, EmitContext ctx)
     {
         switch (isPat.Pattern)
@@ -638,8 +654,8 @@ internal static class ExpressionEmitter
                 sb.Append(" != null");
                 return;
             default:
-                sb.Append("/* TODO: unsupported is-pattern ").Append(isPat.Pattern.Kind()).Append(" */ null");
-                return;
+                throw TranspilerException.Unsupported(isPat.Pattern,
+                    $"the is-pattern '{isPat.Pattern.Kind()}' — only 'is null' and 'is not null' are supported");
         }
     }
 
@@ -665,8 +681,8 @@ internal static class ExpressionEmitter
                 sb.Append(" }");
                 return;
             default:
-                sb.Append("/* TODO: lambda body ").Append(body.Kind()).Append(" */ null");
-                return;
+                throw TranspilerException.Unsupported(body,
+                    $"a lambda body of kind '{body.Kind()}'");
         }
     }
 

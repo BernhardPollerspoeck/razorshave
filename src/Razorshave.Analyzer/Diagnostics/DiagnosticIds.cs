@@ -11,11 +11,13 @@ internal static class DiagnosticIds
 
     // 2xxx — unsupported language features
     //
-    // These fire BEFORE the transpiler would emit `/* TODO: <Kind> */ null`
-    // at runtime — the point is to make the silent fallback impossible by
-    // turning it into a visible compile-time diagnostic.
+    // These fire BEFORE the transpiler would throw a TranspilerException
+    // at build time — the point is to surface unsupported syntax as a
+    // squiggle in the IDE rather than as an MSBuild error from inside
+    // the transpiler.
     public const string UnsupportedExpression = "RZS2001";
     public const string UnsupportedStatement = "RZS2002";
+    public const string UnsupportedPattern = "RZS2003";
 
     // 3xxx — component / render-tree issues
     //

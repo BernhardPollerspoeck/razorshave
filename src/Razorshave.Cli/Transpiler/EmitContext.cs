@@ -49,4 +49,30 @@ internal sealed class EmitContext
         }
         return false;
     }
+
+    // Stack of synthetic catch-identifier names. Pushed when entering a
+    // catch-clause body, popped on exit. A bare `throw;` (with no expression)
+    // looks up the innermost identifier so it can re-throw the JS exception
+    // captured by the enclosing `catch (__e) { ... }`.
+    private readonly Stack<string> _catchIdentifiers = new();
+
+    public void PushCatchIdentifier(string name) => _catchIdentifiers.Push(name);
+
+    public void PopCatchIdentifier() => _catchIdentifiers.Pop();
+
+    /// <summary>
+    /// Returns the innermost catch-identifier when the emitter is currently
+    /// inside a catch-clause body. <c>throw;</c> (no expression) re-throws
+    /// against this identifier.
+    /// </summary>
+    public bool TryPeekCatchIdentifier(out string name)
+    {
+        if (_catchIdentifiers.Count > 0)
+        {
+            name = _catchIdentifiers.Peek();
+            return true;
+        }
+        name = "";
+        return false;
+    }
 }

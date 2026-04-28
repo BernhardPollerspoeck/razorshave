@@ -53,8 +53,21 @@ internal static class BuildCommand
     /// task path — MSBuild already built the project once, a nested build
     /// would recurse. CLI direct usage leaves it false so the tool is
     /// one-shot for developers.
+    /// <paramref name="basePath"/> is the URL prefix every emitted asset is
+    /// rooted at (default <c>/</c>). Set to e.g. <c>/myapp/</c> when
+    /// deploying under a sub-path so deep-link requests for
+    /// <c>/myapp/legal/agb</c> still resolve <c>main.X.js</c> correctly.
+    /// <paramref name="title"/> goes into the static <c>&lt;title&gt;</c>
+    /// of the generated <c>index.html</c>. Empty / null falls back to
+    /// "Razorshave"; the per-page <c>&lt;PageTitle&gt;</c> component
+    /// overrides this at runtime.
     /// </summary>
-    public static int Run(string projectPath, bool skipDotnetBuild = false, string configuration = "Debug")
+    public static int Run(
+        string projectPath,
+        bool skipDotnetBuild = false,
+        string configuration = "Debug",
+        string basePath = "/",
+        string? title = null)
     {
         var absProject = Path.GetFullPath(projectPath);
         if (!Directory.Exists(absProject))
@@ -147,7 +160,9 @@ internal static class BuildCommand
         if (bundleResult.Exit != 0) return bundleResult.Exit;
 
         Console.WriteLine("[6/6] Finalising dist/ (prune unbundled sources, copy wwwroot + scoped CSS) ...");
-        FinaliseDist(distDir, absProject, runtimeStaging, bundleResult.OutputFileName, configuration, tfm);
+        FinaliseDist(distDir, absProject, runtimeStaging, bundleResult.OutputFileName, configuration, tfm,
+            NormalizeBasePath(basePath),
+            string.IsNullOrWhiteSpace(title) ? "Razorshave" : title!.Trim());
 
         // Atomic promotion of staging → dist. If anything blew up above, the
         // previous `dist/` is still intact and the build can be retried.
@@ -599,7 +614,14 @@ internal static class BuildCommand
         File.WriteAllText(Path.Combine(distDir, "main.js"), sb.ToString());
     }
 
-    private static void WriteIndexHtml(string distDir, string bundleFileName, IReadOnlyList<string> cssLinks, string bodyAttributes)
+    private static void WriteIndexHtml(
+        string distDir,
+        string bundleFileName,
+        IReadOnlyList<string> cssLinks,
+        List<(string File, string Mime)> favicons,
+        string bodyAttributes,
+        string basePath,
+        string title)
     {
         // Bundled output — esbuild inlines the runtime. index.html pulls the
         // content-hashed bundle plus whatever CSS the project needs: Bootstrap
@@ -608,22 +630,36 @@ internal static class BuildCommand
         // are forwarded from App.razor so CSS that hooks on body (data-*
         // attrs, theme classes, lang) behaves the same in the SPA as in
         // Blazor Server.
+        //
+        // Asset URLs are absolute (rooted at basePath), not relative — a
+        // SPA's deep-link of /legal/agb is served the same index.html as /,
+        // and a relative `./main.X.js` would resolve to /legal/main.X.js
+        // and 404. Same reasoning as Vite/webpack/Parcel. basePath defaults
+        // to "/"; users deploying under a sub-path set RazorshaveBasePath
+        // and every emitted href/src is prefixed accordingly.
         var sb = new StringBuilder();
         sb.Append("<!DOCTYPE html>\n");
         sb.Append("<html lang=\"en\">\n");
         sb.Append("<head>\n");
         sb.Append("  <meta charset=\"UTF-8\">\n");
         sb.Append("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
-        sb.Append("  <title>Razorshave</title>\n");
+        sb.Append("  <title>").Append(EscapeHtml(title)).Append("</title>\n");
         foreach (var link in cssLinks)
         {
-            sb.Append("  <link rel=\"stylesheet\" href=\"").Append(link).Append("\">\n");
+            sb.Append("  <link rel=\"stylesheet\" href=\"").Append(basePath).Append(link).Append("\">\n");
         }
-        sb.Append("  <link rel=\"icon\" type=\"image/png\" href=\"favicon.png\">\n");
+        // Favicons: one link per discovered file. Empty list → no link
+        // emitted, which is intentionally better than a 404 from a broken
+        // hardcoded reference.
+        foreach (var (file, mime) in favicons)
+        {
+            sb.Append("  <link rel=\"icon\" type=\"").Append(mime)
+              .Append("\" href=\"").Append(basePath).Append(file).Append("\">\n");
+        }
         sb.Append("</head>\n");
         sb.Append("<body").Append(bodyAttributes).Append(">\n");
         sb.Append("  <div id=\"app\"></div>\n");
-        sb.Append("  <script type=\"module\" src=\"./").Append(bundleFileName).Append("\"></script>\n");
+        sb.Append("  <script type=\"module\" src=\"").Append(basePath).Append(bundleFileName).Append("\"></script>\n");
         sb.Append("</body>\n");
         sb.Append("</html>\n");
         File.WriteAllText(Path.Combine(distDir, "index.html"), sb.ToString());
@@ -777,13 +813,27 @@ internal static class BuildCommand
         return null;
     }
 
+    // Normalises whatever the user passed in via -c Razorshave / RazorshaveBasePath
+    // to a canonical "/<...>/" form so concatenations with file names always
+    // produce a clean absolute URL. Empty or null collapses to "/".
+    private static string NormalizeBasePath(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "/";
+        var p = raw.Trim();
+        if (!p.StartsWith('/')) p = "/" + p;
+        if (!p.EndsWith('/')) p += "/";
+        return p;
+    }
+
     private static void FinaliseDist(
         string distDir,
         string projectDir,
         string runtimeStaging,
         string bundleFileName,
         string configuration,
-        string tfm)
+        string tfm,
+        string basePath,
+        string title)
     {
         // Drop individual component js + main.js + runtime/ — the bundle has
         // them all inlined. Keep only the hashed bundle and the index.html.
@@ -811,8 +861,52 @@ internal static class BuildCommand
         var scopedCssLink = CopyScopedCssBundle(distDir, projectDir, configuration, tfm);
 
         var bodyAttributes = ReadAppRazorBodyAttributes(projectDir);
-        WriteIndexHtml(distDir, bundleFileName, BuildCssLinks(distDir, scopedCssLink), bodyAttributes);
+        WriteIndexHtml(
+            distDir,
+            bundleFileName,
+            BuildCssLinks(distDir, scopedCssLink),
+            DiscoverFavicons(distDir),
+            bodyAttributes,
+            basePath,
+            title);
         WriteDeployConfigs(distDir);
+    }
+
+    // Minimal HTML-text-content escape for the <title> tag. The title goes
+    // straight from the user's MSBuild property into the head, so '&', '<'
+    // and '>' (rare but legal in product names) must be neutralised. Quotes
+    // are also encoded so the same helper is safe inside attributes if we
+    // ever reuse it.
+    private static string EscapeHtml(string s)
+    {
+        return s
+            .Replace("&", "&amp;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;")
+            .Replace("\"", "&quot;")
+            .Replace("'", "&#39;");
+    }
+
+    // wwwroot is copied into distDir before this runs. Scan for the standard
+    // favicon names and emit one <link rel="icon"> per match — modern
+    // browsers pick whichever they prefer when several are present, so no
+    // need to choose. The order (ico, svg, png) is the source order in the
+    // returned list, which becomes the source order in the head; that's
+    // what some screenshot/share-card crawlers walk linearly.
+    private static List<(string File, string Mime)> DiscoverFavicons(string distDir)
+    {
+        var candidates = new (string Name, string Mime)[]
+        {
+            ("favicon.ico", "image/x-icon"),
+            ("favicon.svg", "image/svg+xml"),
+            ("favicon.png", "image/png"),
+        };
+        var found = new List<(string File, string Mime)>();
+        foreach (var c in candidates)
+        {
+            if (File.Exists(Path.Combine(distDir, c.Name))) found.Add((c.Name, c.Mime));
+        }
+        return found;
     }
 
     // Pulls the `<body …>` attribute list out of the project's App.razor so
