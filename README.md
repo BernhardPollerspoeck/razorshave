@@ -4,7 +4,7 @@
 
 Build-time compiler that turns Blazor components into static JavaScript — no WASM runtime, no SignalR, no server. Output is a static bundle deployable on any web server (nginx, S3, Cloudflare Pages).
 
-**Status:** `0.1.1` on NuGet — first public preview. 272+ tests green across C# + JS; KitchenSink demo transpiles end-to-end. API and emitters are shaping up but still expect change before `1.0`.
+**Status:** `0.2.0` on NuGet — public preview. 309 tests green (191 JS + 118 C#); KitchenSink demo transpiles end-to-end. API and emitters are shaping up but still expect change before `1.0`.
 
 ## Getting started
 
@@ -37,9 +37,9 @@ Your `.csproj` should now look something like:
     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Razorshave.Abstractions" Version="0.1.1" />
-    <PackageReference Include="Razorshave.Analyzer"     Version="0.1.1" />
-    <PackageReference Include="Razorshave.Cli"          Version="0.1.1" PrivateAssets="all" />
+    <PackageReference Include="Razorshave.Abstractions" Version="0.2.0" />
+    <PackageReference Include="Razorshave.Analyzer"     Version="0.2.0" />
+    <PackageReference Include="Razorshave.Cli"          Version="0.2.0" PrivateAssets="all" />
   </ItemGroup>
 </Project>
 ```
@@ -96,11 +96,23 @@ The `Razorshave` configuration is opt-in — `Debug` and `Release` stay vanilla 
 
 If you write C# the transpiler cannot emit yet, the analyzer fires at edit-time:
 
-- **RZS2001** — unsupported expression (e.g. `switch` with list patterns)
-- **RZS2002** — unsupported statement (e.g. `try/catch`)
+- **RZS2001** — unsupported expression (e.g. `stackalloc`)
+- **RZS2002** — unsupported statement
+- **RZS2003** — unsupported pattern (list, declaration, recursive, binary patterns inside `is` / `switch`)
 - **RZS3001** — your component's name shadows a runtime component (`NavLink`, `Router`, `PageTitle`)
 
-No silent `/* TODO */ null` in the generated JS — if it compiles, it runs.
+Every diagnostic carries a link to the issue tracker — if you hit one, file a repro so the gap can be closed. No silent `/* TODO */` in the generated JS: if the analyzer doesn't catch a gap, the transpiler throws as a hard build error (`RZS9001`) with file + line + the same issue link. If it compiles, it runs.
+
+### Configuration knobs
+
+Set these in your `.csproj` (under `<PropertyGroup>`):
+
+```xml
+<RazorshaveBasePath>/myapp/</RazorshaveBasePath>  <!-- default "/" -->
+<RazorshaveTitle>My App</RazorshaveTitle>          <!-- default $(AssemblyName) -->
+```
+
+`RazorshaveBasePath` prefixes every emitted asset URL — set this when deploying under a sub-path so deep-link requests for `/myapp/legal/agb` still resolve `main.X.js` correctly. `RazorshaveTitle` is the static `<title>` in `index.html`; per-page `<PageTitle>` components override it at runtime.
 
 ---
 
@@ -188,7 +200,7 @@ dotnet test
 cd src/Razorshave.Runtime && npm test
 ```
 
-At the time of writing: 295 tests across both runners (191 JS + 104 C#).
+At the time of writing: 309 tests across both runners (191 JS + 118 C#).
 
 ## License
 
