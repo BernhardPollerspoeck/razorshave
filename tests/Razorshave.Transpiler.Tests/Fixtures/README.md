@@ -48,6 +48,7 @@ Generated with SDK **10.0.201** (`global.json`) against .NET 10 Blazor Server te
 | `counter/` | Components/Pages/Counter.razor | State, event handler (`MouseEventArgs`), `@page`, `@rendermode`, simple method |
 | `weather/` | Components/Pages/Weather.razor | `@if`/`@foreach` as plain C#, nested class, `[StreamRendering]`, `async OnInitializedAsync`, LINQ, object-init |
 | `mainlayout/` | Components/Layout/MainLayout.razor | `LayoutComponentBase`, `Body` property, nested component (`<NavMenu>`) |
+| `markuptitle/` | Components/Pages/MarkupTitle.razor | Pins Razor SG's `AddMarkupContent` routing for non-ASCII PageTitle text (em-dash, €) — guards the runtime's markup-vnode title-extraction path |
 
 ## Don't edit the upstream files in KitchenSink
 

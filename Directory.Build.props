@@ -30,8 +30,18 @@
                         support, RZS2003 for unsupported C# patterns, absolute
                         SPA asset paths (deep-link fix) + RazorshaveBasePath for
                         sub-path deployments, RazorshaveTitle property, favicon
-                        auto-detect (ico / svg / png). -->
-    <Version>0.2.0</Version>
+                        auto-detect (ico / svg / png).
+         0.2.0 → 0.2.1: PageTitle correctness fix for markup-classified static
+                        text. Razor's source generator routes static <PageTitle>
+                        text containing non-ASCII or entity-laden content
+                        through AddMarkupContent rather than AddContent, which
+                        the transpiler faithfully emits as markup() vnodes.
+                        The runtime's text extractor now walks the full child
+                        shape (strings, numbers, markup HTML parsed via an
+                        inert <template> for textContent, element vnodes,
+                        nested arrays) instead of dropping anything that
+                        wasn't a plain string. -->
+    <Version>0.2.1</Version>
     <!-- Deterministic builds + source-link help consumers debug into the
          packages instead of stepping through decompiled bodies. -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>

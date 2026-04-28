@@ -4,7 +4,7 @@
 
 Build-time compiler that turns Blazor components into static JavaScript — no WASM runtime, no SignalR, no server. Output is a static bundle deployable on any web server (nginx, S3, Cloudflare Pages).
 
-**Status:** `0.2.0` on NuGet — public preview. 309 tests green (191 JS + 118 C#); KitchenSink demo transpiles end-to-end. API and emitters are shaping up but still expect change before `1.0`.
+**Status:** `0.2.1` on NuGet — public preview. 316 tests green (197 JS + 119 C#); KitchenSink demo transpiles end-to-end. API and emitters are shaping up but still expect change before `1.0`.
 
 ## Getting started
 
@@ -37,9 +37,9 @@ Your `.csproj` should now look something like:
     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Razorshave.Abstractions" Version="0.2.0" />
-    <PackageReference Include="Razorshave.Analyzer"     Version="0.2.0" />
-    <PackageReference Include="Razorshave.Cli"          Version="0.2.0" PrivateAssets="all" />
+    <PackageReference Include="Razorshave.Abstractions" Version="0.2.1" />
+    <PackageReference Include="Razorshave.Analyzer"     Version="0.2.1" />
+    <PackageReference Include="Razorshave.Cli"          Version="0.2.1" PrivateAssets="all" />
   </ItemGroup>
 </Project>
 ```

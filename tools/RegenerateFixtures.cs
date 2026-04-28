@@ -28,9 +28,10 @@ var generatedRoot = Path.Combine(kitchenSink, "obj", "Debug", "net10.0", "genera
 // RazorPath / GeneratedPath are slash-separated, relative to KitchenSink root / generatedRoot.
 var targets = new (string Name, string RazorPath, string GeneratedPath)[]
 {
-    ("counter",    "Components/Pages/Counter.razor",     "Components/Pages/Counter_razor.g.cs"),
-    ("weather",    "Components/Pages/Weather.razor",     "Components/Pages/Weather_razor.g.cs"),
-    ("mainlayout", "Components/Layout/MainLayout.razor", "Components/Layout/MainLayout_razor.g.cs"),
+    ("counter",      "Components/Pages/Counter.razor",     "Components/Pages/Counter_razor.g.cs"),
+    ("weather",      "Components/Pages/Weather.razor",     "Components/Pages/Weather_razor.g.cs"),
+    ("mainlayout",   "Components/Layout/MainLayout.razor", "Components/Layout/MainLayout_razor.g.cs"),
+    ("markuptitle",  "Components/Pages/MarkupTitle.razor", "Components/Pages/MarkupTitle_razor.g.cs"),
 };
 
 // --- Step 1: build KitchenSink ---

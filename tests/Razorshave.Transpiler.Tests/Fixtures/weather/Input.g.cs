@@ -75,6 +75,18 @@ using KitchenSink.Client.Components.Layout
 
 #nullable disable
     ;
+#nullable restore
+#line (12,2)-(12,33) "E:\Gewerbe\qsp\razorshave\e2e\KitchenSink.Client\Components\_Imports.razor"
+using KitchenSink.Client.Models
+
+#nullable disable
+    ;
+#nullable restore
+#line (13,2)-(13,31) "E:\Gewerbe\qsp\razorshave\e2e\KitchenSink.Client\Components\_Imports.razor"
+using Razorshave.Abstractions
+
+#nullable disable
+    ;
     #line default
     #line hidden
     [global::Microsoft.AspNetCore.Components.RouteAttribute(

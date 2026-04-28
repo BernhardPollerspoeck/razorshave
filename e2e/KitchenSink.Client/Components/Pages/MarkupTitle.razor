@@ -1,0 +1,12 @@
+@page "/markup-title"
+
+<PageTitle>Verified — Public proof. €19/month.</PageTitle>
+
+<h1>Markup-classified title test</h1>
+
+<p>This page exists to pin Razor's source-generator behaviour for static
+   title text containing non-ASCII characters (em-dash, euro sign). The
+   transpiler test fixture derived from this page locks down whether the
+   SG routes the content through <code>AddContent</code> or
+   <code>AddMarkupContent</code> — the runtime's PageTitle has to handle
+   both shapes either way.</p>
